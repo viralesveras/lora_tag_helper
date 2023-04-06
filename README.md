@@ -18,3 +18,6 @@ The workflow is as follows:
 9. Done! Copy the generated LoRA to your stable-diffusion-webui's models/Lora folder.
 
 Note: This program uses .json files to track its own tagging info for each image, and expects you to use .txt files for the image captions used in training.
+
+
+There are now two versions of the requirements.txt. If you don't have/want to use automatic tagging, then use the requirements_no_ai.txt file, which will greatly reduce the size of your dependencies. In that case, the app will show an error when it first queries the availability of these libraries, but should continue normally after that except for the lack of AI tagging.

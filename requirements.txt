@@ -1,2 +1,12 @@
+wheel
+torch
 tiktoken
 Pillow
+huggingface-hub
+pandas
+opencv-python
+onnxruntime-gpu
+git+https://github.com/KichangKim/DeepDanbooru.git@d91a2963bf87c6a770d74894667e9ffa9f6de7ff
+tensorflow
+nvidia-cudnn-cu11
+open-clip-torch

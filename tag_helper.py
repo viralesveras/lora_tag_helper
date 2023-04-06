@@ -5,21 +5,138 @@ from os.path import isfile, join, splitext, exists, getmtime, relpath
 from tkinter.messagebox import askyesno, showinfo, showwarning, showerror
 import pathlib
 import tkinter.filedialog
+import tkinter.ttk
 import tkinter as tk
 from PIL import ImageTk, Image
 import json
-import tiktoken
+import threading
+
+def get_automatic_tags_from_txt_file(image_file):
+    #If .txt available, read into automated caption
+    txt_file = splitext(image_file)[0] + ".txt"
+    try:
+        with open(txt_file) as f:
+            return ' '.join(f.read().split())
+    except:
+        pass
+    return None
+
+def import_tokenizer_reqs():
+    try:
+        global torch, open_clip, Image, model, preprocess, tokenizer, use_clip
+        print("Importing Tokenizer...")
+        import torch
+        import open_clip
+        from PIL import Image
+
+        model, _, preprocess = open_clip.create_model_and_transforms('ViT-L-14', pretrained='laion400m_e32')
+        tokenizer = open_clip.get_tokenizer('ViT-L-14')
+
+        use_clip = True
+        print("Done!")
+
+    except:
+        print("Done!")
+        print(traceback.format_exc())
+        print("Couldn't load torch or clip, falling back to tiktoken. Token count will be less accurate.")
+        use_clip = False
+        import tiktoken
+
+
 
 #Return approximate number of tokens in string (seems to err on the high side)
 #TODO: Add torch as dependency and query model directly for exact value?
-def num_tokens_from_string(string: str, encoding_name: str) -> int:
+def num_tokens_from_string(string: str, encoding_name: str= None) -> int:
     """Returns the number of tokens in a text string."""
-    encoding = tiktoken.get_encoding(encoding_name)
-    num_tokens = len(encoding.encode(string))
-    return num_tokens
+    if use_clip:
+        tokens = list(tokenizer([string])[0])
+        while tokens[-1] == 0:
+            tokens.pop()
+        print(f"Tokens: {tokens}")
+        return len(tokens) - 2 #Always has a start/end token.
+    else:
+        encoding = tiktoken.get_encoding(encoding_name)
+        num_tokens = len(encoding.encode(string))
+        return num_tokens
 
-def truncate_string_to_max_tokens(string):
-    while num_tokens_from_string(string, "gpt2") > 75:
+def import_interrogators():
+    try:
+        global tagger, utils, interrogator, use_interrogate
+        print("Importing automatic caption interrogators...")
+        import tagger
+        from tagger import utils
+        from tagger import interrogator
+        tagger.utils.refresh_interrogators()
+        print("Done!")
+
+    except:
+        print(traceback.format_exc())
+        print("Couldn't load clip interrogator. Won't interrogate images for automatic tags, only TXT.")
+        use_interrogate = False
+
+def do_interrogate(
+        image: Image,
+
+        interrogator: str,
+        threshold: float,
+        additional_tags: str,
+        exclude_tags: str,
+        sort_by_alphabetical_order: bool,
+        add_confident_as_weight: bool,
+        replace_underscore: bool,
+        replace_underscore_excludes: str):
+    
+    if interrogator not in tagger.utils.interrogators:
+        return ['', None, None, f"'{interrogator}' is not a valid interrogator"]
+
+    interrogator: tagger.Interrogator = tagger.utils.interrogators[interrogator]
+
+    postprocess_opts = (
+        threshold,
+        tagger.utils.split_str(additional_tags),
+        tagger.utils.split_str(exclude_tags),
+        sort_by_alphabetical_order,
+        add_confident_as_weight,
+        replace_underscore,
+        tagger.utils.split_str(replace_underscore_excludes)
+    )
+
+    # single process
+    if image is not None:
+        ratings, tags = interrogator.interrogate(image)
+        processed_tags = tagger.Interrogator.postprocess_tags(
+            tags,
+            *postprocess_opts
+        )
+
+        return [
+            ', '.join(processed_tags),
+            ratings,
+            tags,
+            ''
+        ]
+    return ['', None, None, '']
+    
+use_interrogate = True
+
+
+def interrogate_automatic_tags(image_file):
+    if use_interrogate:
+        try:
+            image = Image.open(image_file).convert('RGB')
+            
+            caption = do_interrogate(image, "wd14-vit-v2-git", 0.35, "", "", False, False, True, "0_0, (o)_(o), +_+, +_-, ._., <o>_<o>, <|>_<|>, =_=, >_<, 3_3, 6_9, >_o, @_@, ^_^, o_o, u_u, x_x, |_|, ||_||")[0]
+            print(f"Interrogate returned: {caption}")
+            return caption
+        except:
+            print(traceback.format_exc())            
+            return get_automatic_tags_from_txt_file(image_file)
+    else:
+       return get_automatic_tags_from_txt_file(image_file)
+    
+
+def truncate_string_to_max_tokens(string : str):
+    while num_tokens_from_string(string.strip(), "gpt2") > 75:
         string = " ".join(string.split()[:-1])
 
     while string.endswith(","):
@@ -554,7 +671,7 @@ class generate_lora_subset_popup(object):
 
         self.lora_name = tk.StringVar(None)
         self.lora_name.set("_".join(self.find_newest_subset("").split("_")[1:]))
-        self.lora_name.trace("w", lambda name, index, mode: 
+        self.nametracer = self.lora_name.trace("w", lambda name, index, mode: 
                                 self.populate_from_newest_subset())
         lora_name_entry = tk.Entry(self.form_frame,
                                      textvariable=self.lora_name, 
@@ -646,6 +763,7 @@ class generate_lora_subset_popup(object):
                           sticky="ew")
 
         self.review_option = tk.IntVar()
+
         self.review_option.set(1)
         tk.Radiobutton(review_group, 
            text=f"None",
@@ -846,9 +964,12 @@ class generate_lora_subset_popup(object):
                   "the subset.")
             self.output_path.set(default_dir)
             return
-        
+
         #Validate LoRA name
+        self.lora_name.trace_vdelete("w", self.nametracer)
         self.lora_name.set('_'.join(self.lora_name.get().split()))
+        self.nametracer = self.lora_name.trace("w", lambda name, index, mode: 
+                                self.populate_from_newest_subset())
 
         #  Make num_name folder or error if it already exists and isn't labeled
         #  as LoRA subset
@@ -948,6 +1069,7 @@ class generate_lora_subset_popup(object):
 
         #Pop up box for manual review
         try:
+            print(f"About to wait for window: {self.review_option.get()}")
             if self.review_option.get() > 1:                    
                 self.top.wait_window(manually_review_subset_popup(
                         self,
@@ -970,6 +1092,79 @@ class generate_lora_subset_popup(object):
             pass
         
 
+# the given message with a bouncing progress bar will appear for as long as func is running, returns same as if func was run normally
+# a pb_length of None will result in the progress bar filling the window whose width is set by the length of msg
+# Ex:  run_func_with_loading_popup(lambda: task('joe'), photo_img)  
+def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_speed = 8, pb_length = None):
+    func_return_l = []
+    top = tk.Toplevel(parent)
+
+    if isinstance(parent, lora_tag_helper):
+        x = parent.winfo_x() + 200
+        y = parent.winfo_y() + 200
+    
+        top.geometry(f"+{x}+{y}")
+
+    
+    
+    class Main_Frame(object):
+        def __init__(self, top, window_title, bounce_speed, pb_length):
+            print('top of Main_Frame')
+            self.func = func
+            # save root reference
+            self.top = top
+            # set title bar
+            self.top.title(window_title)
+
+            self.bounce_speed = bounce_speed
+            self.pb_length = pb_length
+
+            self.msg_lbl = tk.Label(top, text=msg)
+            self.msg_lbl.pack(padx = 10, pady = 5)
+
+            # the progress bar will be referenced in the "bar handling" and "work" threads
+            self.load_bar = tk.ttk.Progressbar(top)
+            self.load_bar.pack(padx = 10, pady = (0,10))
+
+            self.bar_init()
+
+
+        def bar_init(self):
+            # first layer of isolation, note var being passed along to the self.start_bar function
+            # target is the function being started on a new thread, so the "bar handler" thread
+            self.start_bar_thread = threading.Thread(target=self.start_bar, args=())
+            # start the bar handling thread
+            self.start_bar_thread.start()
+
+        def start_bar(self):
+            # the load_bar needs to be configured for indeterminate amount of bouncing
+            self.load_bar.config(mode='indeterminate', maximum=100, value=0, length = self.pb_length)
+            # 8 here is for speed of bounce
+            self.load_bar.start(self.bounce_speed)            
+#             self.load_bar.start(8)            
+
+            self.work_thread = threading.Thread(target=self.work_task, args=())
+            self.work_thread.start()
+
+            # close the work thread
+            self.work_thread.join()
+
+
+            self.top.destroy()
+#             # stop the indeterminate bouncing
+#             self.load_bar.stop()
+#             # reconfigure the bar so it appears reset
+#             self.load_bar.config(value=0, maximum=0)
+
+        def work_task(self):
+            func_return_l.append(func())
+
+    # call Main_Frame class with reference to root as top
+    Main_Frame(top, window_title, bounce_speed, pb_length)
+    parent.wait_window(top)
+    return func_return_l[0]
+
+
 
 #Application class
 class lora_tag_helper(tk.Tk):
@@ -977,13 +1172,29 @@ class lora_tag_helper(tk.Tk):
     #Constructor
     def __init__(self):
         super().__init__()
+        self.already_initialized = False
         self.image_files = []
         self.file_index = 0
         self.features = []
 
         self.create_ui()
         self.wm_protocol("WM_DELETE_WINDOW", self.quit)
+        self.bind("<Visibility>", self.import_reqs)
 
+    def import_reqs(self, event):
+        if not self.already_initialized and event.widget is not self:
+            self.already_initialized = True
+            run_func_with_loading_popup(
+                    self,
+                    lambda: import_tokenizer_reqs(),
+                    "Importing Tokenizer Requirements...", 
+                    "Importing Tokenizer Requirements...")
+
+            run_func_with_loading_popup(
+                    self,
+                    lambda: import_interrogators(), 
+                    "Importing Interrogator Requirements...", 
+                    "Importing Interrogator Requirements...")
 
     #Create all UI elements
     def create_ui(self):
@@ -1656,13 +1867,12 @@ class lora_tag_helper(tk.Tk):
         json_file = splitext(path)[0] + ".json"
         item = self.get_item_from_file(json_file)
 
-        #If .txt available, read into automated caption
-        txt_file = splitext(path)[0] + ".txt"
-        try:
-            with open(txt_file) as f:
-                item["automatic_tags"] = ' '.join(f.read().split())
-        except:
-            pass
+        item["automatic_tags"] = run_func_with_loading_popup(
+            self,
+            lambda: interrogate_automatic_tags(path), 
+            "Interrogating Image...", 
+            "Interrogating Image...")
+
 
         self.write_item_to_file(item, json_file)
 
@@ -1776,6 +1986,6 @@ class lora_tag_helper(tk.Tk):
 if __name__ == "__main__":
     #Instantiate the application
     app = lora_tag_helper()
-    
+    app.wait_visibility()
     #Let the user do their thing
     app.mainloop()
