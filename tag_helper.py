@@ -1017,8 +1017,17 @@ class generate_lora_subset_popup(object):
 
             #TODO: Trim to token max if requested
             
-            #Copy image to subset folder
-            shutil.copy2(path, subset_path / tgt_image)
+            #Crop image and output to subset folder
+            with Image.open(path) as cropped_img:
+                crop = item["crop"]
+                cropped_img = cropped_img.crop(
+                    (crop[0] * cropped_img.width,
+                     crop[1] * cropped_img.height,
+                     crop[2] * cropped_img.width, 
+                     crop[3] * cropped_img.height))
+                cropped_img.save(subset_path / tgt_image)
+            
+            #shutil.copy2(path, subset_path / tgt_image)
             output_images.append(subset_path / tgt_image)
 
             #Copy JSON to subset folder
@@ -1107,7 +1116,7 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
 
     
     
-    class Main_Frame(object):
+    class _main_frame(object):
         def __init__(self, top, window_title, bounce_speed, pb_length):
             print('top of Main_Frame')
             self.func = func
@@ -1160,10 +1169,9 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
             func_return_l.append(func())
 
     # call Main_Frame class with reference to root as top
-    Main_Frame(top, window_title, bounce_speed, pb_length)
+    _main_frame(top, window_title, bounce_speed, pb_length)
     parent.wait_window(top)
     return func_return_l[0]
-
 
 
 #Application class
@@ -1176,6 +1184,10 @@ class lora_tag_helper(tk.Tk):
         self.image_files = []
         self.file_index = 0
         self.features = []
+        self.l_pct = 0
+        self.t_pct = 0
+        self.r_pct = 1
+        self.b_pct = 1
 
         self.create_ui()
         self.wm_protocol("WM_DELETE_WINDOW", self.quit)
@@ -1284,11 +1296,133 @@ class lora_tag_helper(tk.Tk):
         self.sizer_frame.rowconfigure(0, weight=1)
         self.sizer_frame.columnconfigure(0, weight=1)
 
-        self.image_label = tk.Label(self.sizer_frame, 
-                                    image=self.framed_image, 
-                                    bd=0)
-        self.image_label.grid(row=0, column=0, sticky="nsew")
         self.sizer_frame.bind("<Configure>", self.image_resizer)
+
+        self.x = self.y = 0
+        self.canvas = tk.Canvas(self.sizer_frame, cursor="cross")
+
+        self.canvas.grid(row=0,column=0,sticky="nswe")
+
+        self.canvas.bind("<ButtonPress-1>", self.on_button_press)
+        self.canvas.bind("<B1-Motion>", self.on_move_press)
+        self.canvas.bind("<ButtonRelease-1>", self.on_button_release)
+
+        self.rect = None
+
+        self.start_x = None
+        self.start_y = None
+
+        center_x = self.sizer_frame.winfo_width() / 2
+        center_y = self.sizer_frame.winfo_height() / 2
+
+        self.canvas.create_image(center_x, center_y, anchor="center",image=self.framed_image)
+
+    def on_button_press(self,event):
+        # save mouse drag start position
+        self.start_x = self.canvas.canvasx(event.x)
+        self.start_y = self.canvas.canvasy(event.y)
+        self.on_move_press(event)
+        
+    def on_move_press(self, event):
+        curx = self.canvas.canvasx(event.x)
+        cury = self.canvas.canvasy(event.y)
+
+        l_pct, t_pct = self.coord_to_pct(curx, cury)
+        r_pct, b_pct = self.coord_to_pct(self.start_x, self.start_y)
+
+        self.l_pct = min(l_pct, r_pct)
+        self.t_pct = min(t_pct, b_pct)
+        self.r_pct = max(l_pct, r_pct)
+        self.b_pct = max(t_pct, b_pct)
+
+        self.l_pct = max(0, min(self.l_pct, 1))
+        self.t_pct = max(0, min(self.t_pct, 1))
+        self.r_pct = max(0, min(self.r_pct, 1))
+        self.b_pct = max(0, min(self.b_pct, 1))
+
+        # expand rectangle as you drag the mouse
+        self.generate_crop_rectangle()
+    
+    def coord_to_pct(self, x, y):
+        w = self.image_frame.winfo_width() - 4
+        h = self.image_frame.winfo_height() - 4
+        x_offset = (w - self.image_width) / 2
+        y_offset = (h - self.image_height) / 2
+        return ((x - x_offset) / self.image_width, 
+                (y - y_offset) / self.image_height)
+
+    def pct_to_coord(self, x_pct, y_pct):
+        w = self.image_frame.winfo_width() - 4
+        h = self.image_frame.winfo_height() - 4
+        x_offset = (w - self.image_width) / 2
+        y_offset = (h - self.image_height) / 2
+        return (int(x_pct * self.image_width + x_offset),
+                int(y_pct * self.image_height + y_offset))
+
+    def generate_crop_rectangle(self):
+        f_w = self.image_frame.winfo_width() - 4
+        f_h = self.image_frame.winfo_height() - 4
+        x_offset = (f_w - self.image_width) / 2
+        y_offset = (f_h - self.image_height) / 2
+
+        try:
+            if self.crop_left_area:
+                self.canvas.delete(self.crop_left_area)
+            if self.crop_top_area:
+                self.canvas.delete(self.crop_top_area)
+            if self.crop_right_area:
+                self.canvas.delete(self.crop_right_area)
+            if self.crop_bottom_area:
+                self.canvas.delete(self.crop_bottom_area)
+        except:
+            pass
+
+        l, t = self.pct_to_coord(self.l_pct, self.t_pct)
+        r, b = self.pct_to_coord(self.r_pct, self.b_pct)
+
+        
+        w = int(l - x_offset)
+        h = int(f_h - 2 * y_offset)
+        fill = self.canvas.winfo_rgb("red") + (int((0.5 if w > 1 else 0) * 255),)
+        image = Image.new('RGBA', (w, h), fill)
+        self.crop_left_image = ImageTk.PhotoImage(image)
+        self.crop_left_area = self.canvas.create_image(x_offset, y_offset, image=self.crop_left_image, anchor="nw")
+
+        w = int(r - l)
+        h = int(t - y_offset)
+        fill = self.canvas.winfo_rgb("red") + (int((0.5 if h > 1 else 0) * 255),)
+        image = Image.new('RGBA', (w, h), fill)
+        self.crop_top_image = ImageTk.PhotoImage(image)
+        self.crop_top_area = self.canvas.create_image(l, y_offset, image=self.crop_top_image, anchor="nw")
+
+        w = int(f_w - r - x_offset)
+        h = int(f_h - 2 * y_offset)
+        fill = self.canvas.winfo_rgb("red") + (int((0.5 if w > 1 else 0) * 255),)
+        image = Image.new('RGBA', (w, h), fill)
+        self.crop_right_image = ImageTk.PhotoImage(image)
+        self.crop_right_area = self.canvas.create_image(r, y_offset, image=self.crop_right_image, anchor="nw")
+
+        w = int(r - l)
+        h = int(f_h - b - y_offset)
+        fill = self.canvas.winfo_rgb("red") + (int((0.5 if h > 1 else 0) * 255),)
+        image = Image.new('RGBA', (w, h), fill)
+        self.crop_bottom_image = ImageTk.PhotoImage(image)
+        self.crop_bottom_area = self.canvas.create_image(l, b, image=self.crop_bottom_image, anchor="nw")
+
+
+    def on_button_release(self, event):
+        coord1 = self.pct_to_coord(self.l_pct, self.t_pct)
+        coord2 = self.pct_to_coord(self.r_pct, self.b_pct)
+        if(coord2[0] - coord1[0] < 5
+           and coord2[1] - coord1[1] < 5):
+            self.l_pct = 0
+            self.t_pct = 0
+            self.r_pct = 1
+            self.b_pct = 1
+            self.canvas.delete(self.crop_left_area)
+            self.canvas.delete(self.crop_top_area)
+            self.canvas.delete(self.crop_right_area)
+            self.canvas.delete(self.crop_bottom_area)
 
     #Create the initial frame display
     def create_initial_frame(self):
@@ -1517,7 +1651,7 @@ class lora_tag_helper(tk.Tk):
         self.features = []
         self.image = Image.open("icon.png")
         self.framed_image = ImageTk.PhotoImage(self.image)
-        self.image_label.configure(image=self.framed_image)
+        self.canvas.delete(self.image_handle)
         self.create_form_frame()
         self.form_frame.lift()
         self.statusbar_text.set("")
@@ -1559,6 +1693,16 @@ class lora_tag_helper(tk.Tk):
             self.summary_textbox.insert("1.0", item["summary"])
         except:
             pass
+
+        try:
+            self.l_pct = item["crop"][0]
+            self.t_pct = item["crop"][1]
+            self.r_pct = item["crop"][2]
+            self.b_pct = item["crop"][3]
+        except:
+            pass
+
+        self.generate_crop_rectangle()
 
         try:
             i = 0
@@ -1667,19 +1811,26 @@ class lora_tag_helper(tk.Tk):
                 tgt_width * self.image.height / self.image.width)
 
             if new_width <= tgt_width:
-                resized_image = self.image.resize(
-                    (new_width, tgt_height), 
-                    Image.LANCZOS)
-                
+                self.image_width = new_width
+                self.image_height = tgt_height
             else:
-                resized_image = self.image.resize(
-                    (tgt_width, new_height), 
-                    Image.LANCZOS)
+                self.image_width = tgt_width
+                self.image_height = new_height
+            resized_image = self.image.resize(
+                (new_width, tgt_height), 
+                Image.LANCZOS)
 
             self.framed_image = ImageTk.PhotoImage(resized_image)
-            self.image_label.configure(image=self.framed_image)
+            center_x = self.sizer_frame.winfo_width() / 2
+            center_y = self.sizer_frame.winfo_height() / 2
+
+            try:
+                self.canvas.delete(self.image_handle)
+            except:
+                pass
+            self.image_handle = self.canvas.create_image(center_x, center_y, anchor="center",image=self.framed_image)
         except:
-            self.image_label.configure(image='')
+            pass
         self.geometry(oldgeometry)
         self.minsize(width=oldminsize[0], height=oldminsize[1])
         self.maxsize(width=oldmaxsize[0], height=oldmaxsize[1])
@@ -1689,6 +1840,12 @@ class lora_tag_helper(tk.Tk):
     def image_resizer(self, e):
         self.already_resizing = True
 
+        try:
+            l, t = self.pct_to_coord(self.l_pct, self.t_pct)
+            r, b = self.pct_to_coord(self.r_pct, self.b_pct)
+        except:
+            pass
+
         tgt_width = self.image_frame.winfo_width() - 4
         tgt_height = self.image_frame.winfo_height() - 4
 
@@ -1696,17 +1853,29 @@ class lora_tag_helper(tk.Tk):
         new_height = int(tgt_width * self.image.height / self.image.width)
 
         if new_width <= tgt_width:
-            resized_image = self.image.resize(
-                (new_width, tgt_height), 
-                Image.LANCZOS)
+            self.image_width = new_width
+            self.image_height = tgt_height
         else:
-
-            resized_image = self.image.resize(
-                (tgt_width, new_height), 
-                Image.LANCZOS)
+            self.image_width = tgt_width
+            self.image_height = new_height
+        resized_image = self.image.resize(
+            (self.image_width, self.image_height), 
+            Image.LANCZOS)
         self.framed_image = ImageTk.PhotoImage(resized_image)
-        self.image_label.configure(image=self.framed_image)
+        #self.image_label.configure(image=self.framed_image)
+        center_x = self.sizer_frame.winfo_width() / 2
+        center_y = self.sizer_frame.winfo_height() / 2
 
+        try:
+            self.canvas.delete(self.image_handle)
+        except:
+            pass
+        self.image_handle = self.canvas.create_image(center_x, center_y, anchor="center",image=self.framed_image)
+
+        try:
+            self.generate_crop_rectangle()
+        except:
+            pass
     #Remove row from feature table
     def remove_row(self, i: int):
         self.features[i][0]["entry"].destroy()
@@ -1791,6 +1960,16 @@ class lora_tag_helper(tk.Tk):
             pass
 
         try:
+            item["crop"] = [
+                self.l_pct,
+                self.t_pct,
+                self.r_pct,
+                self.b_pct
+            ]
+        except:
+            pass
+
+        try:
             features = {}
             for i in range(len(self.features)):
                 if(self.features[i][0]["var"].get()
@@ -1817,6 +1996,7 @@ class lora_tag_helper(tk.Tk):
                 "rating": 0,
                 "summary": "",
                 "features": {},
+                "crop": [0, 0, 1, 1],
                 "automatic_tags": ""}
 
         #If .txt available, read into automated caption
