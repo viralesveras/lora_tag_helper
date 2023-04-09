@@ -52,7 +52,6 @@ def num_tokens_from_string(string: str, encoding_name: str= None) -> int:
         tokens = list(tokenizer([string])[0])
         while tokens[-1] == 0:
             tokens.pop()
-        print(f"Tokens: {tokens}")
         return len(tokens) - 2 #Always has a start/end token.
     else:
         encoding = tiktoken.get_encoding(encoding_name)
@@ -126,7 +125,6 @@ def interrogate_automatic_tags(image_file):
             image = Image.open(image_file).convert('RGB')
             
             caption = do_interrogate(image, "wd14-vit-v2-git", 0.35, "", "", False, False, True, "0_0, (o)_(o), +_+, +_-, ._., <o>_<o>, <|>_<|>, =_=, >_<, 3_3, 6_9, >_o, @_@, ^_^, o_o, u_u, x_x, |_|, ||_||")[0]
-            print(f"Interrogate returned: {caption}")
             return caption
         except:
             print(traceback.format_exc())            
@@ -371,24 +369,31 @@ class manually_review_subset_popup(object):
         self.top.geometry(oldgeometry)
         self.top.minsize(width=oldminsize[0], height=oldminsize[1])
         self.top.maxsize(width=oldmaxsize[0], height=oldmaxsize[1])
-
+        self.image_resizer()
 
     #Resize image to fit resized window
-    def image_resizer(self, e):
-        self.already_resizing = True
-
+    def image_resizer(self, e = None):
         tgt_width = self.image_frame.winfo_width() - 4
         tgt_height = self.image_frame.winfo_height() - 4
 
+        if tgt_width < 1:
+            tgt_width = 1
+        if tgt_height < 1:
+            tgt_height = 1
+
         new_width = int(tgt_height * self.image.width / self.image.height)
         new_height = int(tgt_width * self.image.height / self.image.width)
+
+        if new_width < 1:
+            new_width = 1
+        if new_height < 1:
+            new_height = 1
 
         if new_width <= tgt_width:
             resized_image = self.image.resize(
                 (new_width, tgt_height), 
                 Image.LANCZOS)
         else:
-
             resized_image = self.image.resize(
                 (tgt_width, new_height), 
                 Image.LANCZOS)
@@ -990,9 +995,22 @@ class generate_lora_subset_popup(object):
 
         self.save_subset_info(subset_path)
 
+        popup = tk.Toplevel(self.top)
+        tk.Label(popup, text="Processing subset images...").grid(row=0,column=0)
+        progress_var = tk.DoubleVar()
+        progress_var.set(0)
+        progress_bar = tk.ttk.Progressbar(popup, variable=progress_var, maximum=100)
+        progress_bar.grid(row=1, column=0)#.pack(fill=tk.X, expand=1, side=tk.BOTTOM)
+        popup.pack_slaves()
+        i = 0
         output_images = []
         #For each image
         for path in self.parent.image_files:
+            #Update progress bar
+            progress_var.set(100 * i / len(self.parent.image_files))
+            popup.update()
+            i = i + 1
+
             #Load associated JSON and/or TXT as normal
             item = self.parent.get_item_from_file(path)
 
@@ -1018,16 +1036,18 @@ class generate_lora_subset_popup(object):
             #TODO: Trim to token max if requested
             
             #Crop image and output to subset folder
-            with Image.open(path) as cropped_img:
-                crop = item["crop"]
-                cropped_img = cropped_img.crop(
-                    (crop[0] * cropped_img.width,
-                     crop[1] * cropped_img.height,
-                     crop[2] * cropped_img.width, 
-                     crop[3] * cropped_img.height))
-                cropped_img.save(subset_path / tgt_image)
-            
-            #shutil.copy2(path, subset_path / tgt_image)
+            crop = item["crop"]
+            if crop != [0, 0, 1, 1]:            
+                with Image.open(path) as cropped_img:
+                    cropped_img = cropped_img.crop(
+                        (crop[0] * cropped_img.width,
+                         crop[1] * cropped_img.height,
+                         crop[2] * cropped_img.width, 
+                         crop[3] * cropped_img.height))
+                    cropped_img.save(subset_path / tgt_image)
+            else:
+                shutil.copy2(path, subset_path / tgt_image)
+
             output_images.append(subset_path / tgt_image)
 
             #Copy JSON to subset folder
@@ -1071,10 +1091,35 @@ class generate_lora_subset_popup(object):
             if caption.endswith(", "):
                 caption = caption[:-2]
 
+
+            components = caption.lower().split(",")
+
+            unique_components_forward = []
+            for c in components:
+                found = False
+                for u_c in unique_components_forward:
+                    if c.strip() in u_c.strip():
+                        found = True
+                if not found:
+                    unique_components_forward.append(c.strip())
+
+            unique_components = []
+            for c in reversed(unique_components_forward):
+                found = False
+                for u_c in unique_components:
+                    if c in u_c:
+                        found = True
+                if not found:
+                    unique_components.append(c)
+
+            caption = ", ".join(reversed(unique_components))
+
             if self.review_option.get() == 1: #Auto-truncate
                 caption = truncate_string_to_max_tokens(caption)
             with open(str(subset_path / tgt_prefix) + ".txt", "w") as f:
                 f.write(" ".join(caption.split()))
+
+        popup.destroy()
 
         #Pop up box for manual review
         try:
@@ -1259,7 +1304,7 @@ class lora_tag_helper(tk.Tk):
                               accelerator="Ctrl+L")
         self.bind("<Control-l>", self.generate_lora_subset)
 
-        file_menu.add_command(label="Import all automatic tags from TXT...", 
+        file_menu.add_command(label="Interrogate all automatic tags...", 
                               command=self.update_all_automatic_tags, 
                               underline=10, 
                               accelerator="Ctrl+Shift+T")
@@ -1834,12 +1879,10 @@ class lora_tag_helper(tk.Tk):
         self.geometry(oldgeometry)
         self.minsize(width=oldminsize[0], height=oldminsize[1])
         self.maxsize(width=oldmaxsize[0], height=oldmaxsize[1])
-
+        self.image_resizer()
 
     #Resize image to fit resized window
-    def image_resizer(self, e):
-        self.already_resizing = True
-
+    def image_resizer(self, e = None):
         try:
             l, t = self.pct_to_coord(self.l_pct, self.t_pct)
             r, b = self.pct_to_coord(self.r_pct, self.b_pct)
@@ -1849,8 +1892,18 @@ class lora_tag_helper(tk.Tk):
         tgt_width = self.image_frame.winfo_width() - 4
         tgt_height = self.image_frame.winfo_height() - 4
 
+        if tgt_width < 1:
+            tgt_width = 1
+        if tgt_height < 1:
+            tgt_height = 1
+
         new_width = int(tgt_height * self.image.width / self.image.height)
         new_height = int(tgt_width * self.image.height / self.image.width)
+
+        if new_width < 1:
+            new_width = 1
+        if new_height < 1:
+            new_height = 1
 
         if new_width <= tgt_width:
             self.image_width = new_width
@@ -1972,8 +2025,7 @@ class lora_tag_helper(tk.Tk):
         try:
             features = {}
             for i in range(len(self.features)):
-                if(self.features[i][0]["var"].get()
-                   and self.features[i][1]["var"].get()):
+                if(self.features[i][0]["var"].get()):
                     features.update({self.features[i][0]["var"].get():
                                      self.features[i][1]["var"].get()})
             item["features"] = features
@@ -2043,24 +2095,39 @@ class lora_tag_helper(tk.Tk):
             splitext(self.image_files[self.file_index])[0] + ".json")
 
     #Update automatic tags in JSON for image file
-    def update_automatic_tags(self, path):
+    def update_automatic_tags(self, path, popup=False):
         json_file = splitext(path)[0] + ".json"
         item = self.get_item_from_file(json_file)
 
-        item["automatic_tags"] = run_func_with_loading_popup(
-            self,
-            lambda: interrogate_automatic_tags(path), 
-            "Interrogating Image...", 
-            "Interrogating Image...")
-
+        if popup:
+            item["automatic_tags"] = run_func_with_loading_popup(
+                self,
+                lambda: interrogate_automatic_tags(path), 
+                "Interrogating Image...", 
+                "Interrogating Image...")            
+        else:
+            item["automatic_tags"] = interrogate_automatic_tags(path)
 
         self.write_item_to_file(item, json_file)
 
     #Update automatic tags in all JSON files
     def update_all_automatic_tags(self, event = None):
         self.save_unsaved_popup()
+        popup = tk.Toplevel(self)
+        tk.Label(popup, text="Processing subset images...").grid(row=0,column=0)
+        progress_var = tk.DoubleVar()
+        progress_var.set(0)
+        progress_bar = tk.ttk.Progressbar(popup, variable=progress_var, maximum=100)
+        progress_bar.grid(row=1, column=0)#.pack(fill=tk.X, expand=1, side=tk.BOTTOM)
+        popup.pack_slaves()
+        i = 0
         for f in self.image_files:
-            self.update_automatic_tags(f)
+            #Update progress bar
+            progress_var.set(100 * i / len(self.image_files))
+            popup.update()
+            i = i + 1            
+            self.update_automatic_tags(f, popup=False)
+        popup.destroy()
         self.update_ui_automatic_tags()
 
     #Update automatic tags in all JSON files
