@@ -1,6 +1,6 @@
 import shutil
 import traceback
-from os import listdir, makedirs, walk, getcwd, utime
+from os import listdir, makedirs, walk, getcwd, utime, remove
 from os.path import isfile, join, splitext, exists, getmtime, relpath
 from tkinter.messagebox import askyesno, showinfo, showwarning, showerror
 import pathlib
@@ -10,6 +10,7 @@ import tkinter as tk
 from PIL import ImageTk, Image
 import json
 import threading
+import re
 
 def get_automatic_tags_from_txt_file(image_file):
     #If .txt available, read into automated caption
@@ -45,7 +46,6 @@ def import_tokenizer_reqs():
 
 
 #Return approximate number of tokens in string (seems to err on the high side)
-#TODO: Add torch as dependency and query model directly for exact value?
 def num_tokens_from_string(string: str, encoding_name: str= None) -> int:
     """Returns the number of tokens in a text string."""
     if use_clip:
@@ -802,6 +802,31 @@ class generate_lora_subset_popup(object):
                              sticky="ew")
         self.steps_per_image_entry.bind('<Control-a>', self.select_all)
 
+
+        #Checkbox to enable filtering
+        self.enable_filtering = tk.BooleanVar(None)
+        self.enable_filtering.set(False)
+        enable_filtering_chk = tk.Checkbutton(
+            settings_group,
+            var=self.enable_filtering,
+            text="Enable filtering")        
+        enable_filtering_chk.grid(row=4, column=1, padx=5, pady=5, sticky="w")
+
+        self.filter = tk.StringVar(None)
+        self.filter.set("")
+        self.filter_entry = tk.Entry(settings_group,
+                                     textvariable=self.filter,
+                                     justify="left")
+        self.filter_entry.grid(row=4, column=2, 
+                             padx=(0, 5), pady=5, 
+                             sticky="ew")
+        self.filter_entry.bind('<Control-a>', self.select_all)        
+
+
+        self.enable_filtering.trace("w", 
+                lambda name, index, mode: self.on_enable_filtering_modified())
+
+
         # Cancel button
         cancel_btn = tk.Button(self.form_frame, text='Cancel', 
                                command=self.cancel)
@@ -865,6 +890,12 @@ class generate_lora_subset_popup(object):
             else:
                 self.output_path.set(path)
 
+    def on_enable_filtering_modified(self):
+        if self.enable_filtering.get():
+            self.filter_entry.config(state="normal")
+        else:
+            self.filter_entry.config(state="disabled")
+
     def cancel(self, event = None):
         self.close()
 
@@ -883,6 +914,8 @@ class generate_lora_subset_popup(object):
             "include_automatic_tags": self.include_automatic_tags.get(),
             "review_option": self.review_option.get(),
             "steps_per_image": self.steps_per_image_entry.get(),
+            "enable_filtering": self.enable_filtering.get(),
+            "filter": self.filter.get()
         }
         with open(info_path, "w") as f:
             json.dump(info, f, indent=4)
@@ -950,6 +983,14 @@ class generate_lora_subset_popup(object):
                 self.include_automatic_tags.set(info["include_automatic_tags"])
                 self.review_option.set(info["review_option"])
                 self.steps_per_image_entry.set(info["steps_per_image"])
+                try:
+                    self.enable_filtering.set(info["enable_filtering"])
+                except:
+                    pass
+                try:
+                    self.filter.set(info["filter"])
+                except:
+                    pass
         except:
             pass
         
@@ -992,6 +1033,30 @@ class generate_lora_subset_popup(object):
                           "valid subset information. Aborting to avoid "
                           "clobbering non-subset directory.")                
                 return
+            else:
+                exts = Image.registered_extensions()
+                supported_exts = {ex for ex, f in exts.items() if f in Image.OPEN}
+                supported_exts.update({".txt", ".json"})
+                stale_files = [pathlib.Path(f).absolute()
+                         for f in pathlib.Path(subset_path).rglob("*")
+                          if isfile(join(subset_path, f))]
+                msg_box = tk.messagebox.askyesnocancel('Existing Subset', f"{len(stale_files)} files already exist in '{subset_path}'." 
+                                                    "\nDelete them?",
+                                                    parent=self.top,
+                                                    icon='warning')
+                print(f"msg_box: {msg_box}")
+                if msg_box is not None:
+                    if msg_box == True:
+                        for f in stale_files:
+                            remove(f)
+                else:
+                    showinfo(parent=self.top,
+                             title="Generation canceled",
+                             message=f"Generation canceled.")
+                    return
+                        
+                
+        
 
         self.save_subset_info(subset_path)
 
@@ -1031,28 +1096,7 @@ class generate_lora_subset_popup(object):
                 tgt_image = splitext(tgt_image)[0] + f"_{i}" + tgt_ext
 
             tgt_prefix = splitext(tgt_image)[0]
-
-
-            #TODO: Trim to token max if requested
             
-            #Crop image and output to subset folder
-            crop = item["crop"]
-            if crop != [0, 0, 1, 1]:            
-                with Image.open(path) as cropped_img:
-                    cropped_img = cropped_img.crop(
-                        (crop[0] * cropped_img.width,
-                         crop[1] * cropped_img.height,
-                         crop[2] * cropped_img.width, 
-                         crop[3] * cropped_img.height))
-                    cropped_img.save(subset_path / tgt_image)
-            else:
-                shutil.copy2(path, subset_path / tgt_image)
-
-            output_images.append(subset_path / tgt_image)
-
-            #Copy JSON to subset folder
-            json_file = "".join(splitext(path)[:-1]) + ".json"
-            shutil.copy2(json_file, str(subset_path / tgt_prefix) + ".json")
 
             #Save .txt to subset folder
             caption = ""
@@ -1092,13 +1136,13 @@ class generate_lora_subset_popup(object):
                 caption = caption[:-2]
 
 
-            components = caption.lower().split(",")
+            components = caption.split(",")
 
             unique_components_forward = []
             for c in components:
                 found = False
                 for u_c in unique_components_forward:
-                    if c.strip() in u_c.strip():
+                    if c.strip().lower() in u_c.strip().lower():
                         found = True
                 if not found:
                     unique_components_forward.append(c.strip())
@@ -1107,19 +1151,84 @@ class generate_lora_subset_popup(object):
             for c in reversed(unique_components_forward):
                 found = False
                 for u_c in unique_components:
-                    if c in u_c:
+                    if c.strip().lower() in u_c.strip().lower():
                         found = True
                 if not found:
-                    unique_components.append(c)
+                    unique_components.append(c.strip())
 
             caption = ", ".join(reversed(unique_components))
+
+            if self.enable_filtering.get():
+                filtered_components_or = re.split(",| OR ", self.filter.get())
+                match = False
+
+                print(f"Filtering '{caption}' with '{filtered_components_or}'")
+                for c in filtered_components_or:
+                    print(f"c: {c}")
+
+                    #Handle the AND operator
+                    match_and = True
+                    component_and = c.split(" AND ")
+                    print(f"component_and: {component_and}")
+                    for c_and in component_and:
+                        print(f"c_and: {c_and}")
+                        invert = False
+                        while c_and.strip().startswith("NOT "):
+                            c_and = c_and[4:]
+                            invert = not invert
+
+                        print(f"processed c_and: {c_and}, invert: {invert}")
+                        #Handle the NOT operator
+                        cur_match_and = c_and.strip().lower() in caption.lower()
+                        if invert:
+                            cur_match_and = not cur_match_and
+                        match_and &= cur_match_and
+
+
+                    print(f"match_and: {match_and}")
+
+                    #Handle the OR operator or comma (treated equivalently)
+                    match |= match_and
+                    print(f"match: {match}")
+
+                print(f"final match: {match}\n\n")
+                #If this item doesn't match the filter, skip it.
+                if not match:
+                    continue
 
             if self.review_option.get() == 1: #Auto-truncate
                 caption = truncate_string_to_max_tokens(caption)
             with open(str(subset_path / tgt_prefix) + ".txt", "w") as f:
                 f.write(" ".join(caption.split()))
 
+            #Crop image and output to subset folder
+            crop = item["crop"]
+            if crop != [0, 0, 1, 1]:            
+                with Image.open(path) as cropped_img:
+                    cropped_img = cropped_img.crop(
+                        (crop[0] * cropped_img.width,
+                         crop[1] * cropped_img.height,
+                         crop[2] * cropped_img.width, 
+                         crop[3] * cropped_img.height))
+                    cropped_img.save(subset_path / tgt_image)
+            else:
+                shutil.copy2(path, subset_path / tgt_image)
+
+            output_images.append(subset_path / tgt_image)
+
+            #Copy JSON to subset folder
+            json_file = "".join(splitext(path)[:-1]) + ".json"
+            shutil.copy2(json_file, str(subset_path / tgt_prefix) + ".json")
+
+
         popup.destroy()
+
+        if len(output_images) == 0:
+            showwarning(parent=self.top,
+                        title="Empty Dataset",
+                        message="No images matched filter.")
+            return
+            
 
         #Pop up box for manual review
         try:
@@ -1128,7 +1237,7 @@ class generate_lora_subset_popup(object):
                 self.top.wait_window(manually_review_subset_popup(
                         self,
                         subset_path,
-                        output_images,
+                        output_images.copy(),
                         self.review_option.get() > 2).top)
 
         except:
@@ -1138,7 +1247,7 @@ class generate_lora_subset_popup(object):
         try:
             showinfo(parent=self.top,
                      title="Subset written",
-                     message=f"Wrote {len(self.parent.image_files)} txt captions "
+                     message=f"Wrote {len(output_images)} images+jsons+captions "
                               "to subset folder.")
 
             self.close()
@@ -1641,7 +1750,7 @@ class lora_tag_helper(tk.Tk):
         self.form_frame.rowconfigure(11, weight=1)
 
         import_tags_btn = tk.Button(self.form_frame, 
-                                  text="Import automatic tags from TXT (Ctrl+T)", 
+                                  text="Import automatic tags (Ctrl+T)", 
                                   command=self.update_ui_automatic_tags)
         import_tags_btn.grid(row=12, column=0, 
                              columnspan=2, 
