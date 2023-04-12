@@ -10,3 +10,6 @@ git+https://github.com/KichangKim/DeepDanbooru.git@d91a2963bf87c6a770d74894667e9
 tensorflow; platform_system != "Windows"
 tensorflow<2.11; platform_system == "Windows"
 open-clip-torch
+nltk
+spacy>=2.3.5
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-2.3.1/en_core_web_sm-2.3.1.tar.gz

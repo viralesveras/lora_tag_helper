@@ -1,3 +1,4 @@
+from pprint import pprint
 import shutil
 import traceback
 from os import listdir, makedirs, walk, getcwd, utime, remove
@@ -6,11 +7,154 @@ from tkinter.messagebox import askyesno, showinfo, showwarning, showerror
 import pathlib
 import tkinter.filedialog
 import tkinter.ttk
+import tkinter.font
 import tkinter as tk
 from PIL import ImageTk, Image
 import json
 import threading
 import re
+import spacy
+import time
+import tagger
+nlp = spacy.load("en_core_web_sm")
+
+import tkinter as tk
+from tkinter import ttk
+
+treeview_separator = "\u2192"
+
+BALLOT_BOX = "\u2610"
+BALLOT_BOX_WITH_X = "\u2612"
+
+#TODO:
+#Add/clear value in feature set when checkbox toggled
+#Ctrl+Click to remove from known features (and current image's feature set?)
+#2. Check each subset defaults.json in tree to file to determine default values for folder.
+#3. UI to set folder defaults...Simply Ctrl+Shift+S or separate UI?
+#	- Blank fields should not override parents.
+#   Without any images within a particular tree level, setting defaults for it is impossible unless path is specifiable afterward. 
+# Maybe popup to clarify? It could also specify which items are meant as defaults, obviating the need for some of the logic above.
+#Batch update defaults: Be careful.
+#	- automatic import from summary (of known features)?
+#Drag and drop to jump to image (and/or file browser)
+
+
+class TtkCheckList(ttk.Treeview):
+    def __init__(self, master=None, width=200, clicked=None, separator='.',
+                 unchecked=BALLOT_BOX, checked=BALLOT_BOX_WITH_X, **kwargs):
+        """
+        :param width: the width of the check list
+        :param clicked: the optional function if a checkbox is clicked. Takes a
+                        `iid` parameter.
+        :param separator: the item separator (default is `'.'`)
+        :param unchecked: the character for an unchecked box (default is
+                          "\u2610")
+        :param unchecked: the character for a checked box (default is "\u2612")
+
+        Other parameters are passed to the `TreeView`.
+        """
+        if "selectmode" not in kwargs:
+            kwargs["selectmode"] = "none"
+        if "show" not in kwargs:
+            kwargs["show"] = "tree"
+        ttk.Treeview.__init__(self, master, **kwargs)
+        self._separator = separator
+        self._unchecked = unchecked
+        self._checked = checked
+        self._clicked = self.toggle if clicked is None else clicked
+        self.parent_frame = master
+        self.column('#0', width=width, stretch=tk.YES)
+        self.bind("<Button-1>", self._item_click, True)
+
+    def _item_click(self, event):
+        assert event.widget == self
+        x, y = event.x, event.y
+        element = self.identify("element", x, y)
+        if element == "text":
+            iid = self.identify_row(y)
+            self._clicked(iid)
+            return "break"
+
+    def add_item(self, item):
+        """
+        Add an item to the checklist. The item is the list of nodes separated
+        by dots: `Item.SubItem.SubSubItem`. **This item is used as `iid`  at
+        the underlying `Treeview` level.**
+        """
+        try:
+            parent_iid, text = item.rsplit(self._separator, maxsplit=1)
+        except ValueError:
+            parent_iid, text = "", item
+
+        def in_tree(item, root = ''):
+            children = self.get_children(root)
+            if item in children:
+                return True
+            for child in children:
+                if in_tree(item, child):
+                    return True
+            return False
+
+        if(not in_tree(item)):
+            self.insert(parent_iid, index='end', iid=item,
+                        text=self._unchecked+" "+text, open=True)
+
+    def autofit(self):
+        minwidth = 200
+        font = tk.font.nametofont("TkTextFont")
+        for item in self.get_children():
+            minwidth = max(minwidth, min(400, 40 + font.measure(self.item(item, "text"))))
+            for child in self.get_children(item):
+                minwidth = max(minwidth, min(400, 60 + font.measure(self.item(child, "text"))))
+                for grandchild in self.get_children(child):
+                    minwidth = max(minwidth, min(400, 80 + font.measure(self.item(grandchild, "text"))))
+
+        self.parent_frame.columnconfigure(0, minsize=minwidth)
+
+    def toggle(self, iid):
+        """
+        Toggle the checkbox `iid`
+        """
+        text = self.item(iid, "text")
+        if text[0] == self._checked:
+            self.uncheck(iid)
+        else:
+            self.check(iid)
+
+
+    def checked(self, iid):
+        """
+        Return True if checkbox `iid` is checked
+        """
+        text = self.item(iid, "text")
+        return text[0] == self._checked
+
+    def check(self, iid):
+        """
+        Check the checkbox `iid`
+        """
+        text = self.item(iid, "text")
+        if text[0] == self._unchecked:
+            self.item(iid, text=self._checked+text[1:])
+
+        #If an item is checked, all its ancestors should be as well.        
+        parent_iid = self.parent(iid)
+        if parent_iid:
+            self.check(parent_iid)
+
+    def uncheck(self, iid):
+        """
+        Uncheck the checkbox `iid`
+        """
+        text = self.item(iid, "text")
+        if text[0] == self._checked:
+            self.item(iid, text=self._unchecked+text[1:])
+        
+        #If an item is unchecked, all its descendants should be as well.        
+        children = self.get_children(iid)
+        for c in children:
+            self.uncheck(c)
+
 
 def get_automatic_tags_from_txt_file(image_file):
     #If .txt available, read into automated caption
@@ -22,57 +166,105 @@ def get_automatic_tags_from_txt_file(image_file):
         pass
     return None
 
+use_clip = False
+tokenizer_ready = False
 def import_tokenizer_reqs():
+    global tokenizer_ready
     try:
-        global torch, open_clip, Image, model, preprocess, tokenizer, use_clip
-        print("Importing Tokenizer...")
-        import torch
-        import open_clip
-        from PIL import Image
+        try:
+            global torch, open_clip, Image, model, preprocess, tokenizer, use_clip
+            print("Importing Tokenizer...")
+            import torch
+            import open_clip
+            from PIL import Image
 
-        model, _, preprocess = open_clip.create_model_and_transforms('ViT-L-14', pretrained='laion400m_e32')
-        tokenizer = open_clip.get_tokenizer('ViT-L-14')
+            model, _, preprocess = open_clip.create_model_and_transforms('ViT-L-14', pretrained='laion400m_e32')
+            tokenizer = open_clip.get_tokenizer('ViT-L-14')
 
-        use_clip = True
-        print("Done!")
+            use_clip = True
+            print("Done!")
 
+        except:
+            print("Done!")
+            print(traceback.format_exc())
+            print("Couldn't load torch or clip, falling back to tiktoken. Token count will be less accurate.")
+            import tiktoken
     except:
-        print("Done!")
-        print(traceback.format_exc())
-        print("Couldn't load torch or clip, falling back to tiktoken. Token count will be less accurate.")
-        use_clip = False
-        import tiktoken
+        pass
+    tokenizer_ready = True
 
 
+def do_get_pos(string):
+    return nlp(string)
 
 #Return approximate number of tokens in string (seems to err on the high side)
 def num_tokens_from_string(string: str, encoding_name: str= None) -> int:
     """Returns the number of tokens in a text string."""
     if use_clip:
-        tokens = list(tokenizer([string])[0])
-        while tokens[-1] == 0:
-            tokens.pop()
-        return len(tokens) - 2 #Always has a start/end token.
+        def raw_get_tokens(strings):
+            token_list = [list(x) for x in list(tokenizer(strings))]
+            for tl in token_list:
+                while tl[-1] == 0:
+                    tl.pop()
+            return token_list
+
+        #The tokenizer saturates at 77 tokens. Therefore, split the string
+        #until each returned value is less than 77 tokens to get a valid answer.
+        chunks = [string]
+        token_chunks = raw_get_tokens(chunks)
+        found_77 = len(token_chunks[0]) == 77
+
+        while found_77:
+            new_chunks = []
+            for s in chunks:
+                split_s = s.split()
+                joiner = " "
+                if len(split_s) == 1:
+                    split_s = s
+                    joiner = ""
+                left_s = joiner.join(split_s[:int(len(split_s) / 2)])
+                right_s =joiner.join(split_s[int(len(split_s) / 2):])
+                new_chunks.append(left_s)
+                new_chunks.append(right_s)
+            chunks = new_chunks
+
+            new_token_chunks = raw_get_tokens(chunks)
+            token_chunks = new_token_chunks
+            found_77 = False
+            for t in token_chunks:
+                if len(t) == 77:
+                    found_77 = True
+
+        sum_tokens = 0
+        for t in token_chunks:
+            sum_tokens += len(t) - 2 #Each chunk has a start/end token.
+
+        return sum_tokens
     else:
         encoding = tiktoken.get_encoding(encoding_name)
         num_tokens = len(encoding.encode(string))
         return num_tokens
 
+
 def import_interrogators():
     try:
-        global tagger, utils, interrogator, use_interrogate
-        print("Importing automatic caption interrogators...")
-        import tagger
-        from tagger import utils
-        from tagger import interrogator
-        tagger.utils.refresh_interrogators()
-        print("Done!")
+        try:
+            global tagger, utils, interrogator, use_interrogate, interrogator_ready
+            print("Importing automatic caption interrogators...")
+            import tagger
+            from tagger import utils
+            from tagger import interrogator
+            tagger.utils.refresh_interrogators()
+            print("Done!")
 
+        except:
+            print(traceback.format_exc())
+            print("Couldn't load clip interrogator. Won't interrogate images for automatic tags, only TXT.")
+            use_interrogate = False
     except:
-        print(traceback.format_exc())
-        print("Couldn't load clip interrogator. Won't interrogate images for automatic tags, only TXT.")
-        use_interrogate = False
-
+        pass
+    interrogator_ready = True
+    
 def do_interrogate(
         image: Image,
 
@@ -117,7 +309,7 @@ def do_interrogate(
     return ['', None, None, '']
     
 use_interrogate = True
-
+interrogator_ready = False
 
 def interrogate_automatic_tags(image_file):
     if use_interrogate:
@@ -143,21 +335,41 @@ def truncate_string_to_max_tokens(string : str):
 
 class manually_review_subset_popup(object):
     def __init__(self, parent, subset_path, image_files, review_all):
-        self.parent = parent
-        self.dataset_path = self.parent.parent.path
-        self.subset_path = subset_path
-        self.file_index = 0
-        self.image_files = image_files
-        if not review_all:
-            for f in reversed(image_files):
-                caption_file = "".join(splitext(f)[:-1]) + ".txt"
-                caption = self.get_caption_from_file(caption_file)
-                if num_tokens_from_string(caption, "gpt2") <= 75:
-                    self.image_files.remove(f)
+        try:
+            if not tokenizer_ready:
+                showerror(parent=parent.top,
+                            title="Not ready",
+                            message="The tokenizer is not yet ready.")
+                self.top = tk.Toplevel(self.parent.top)
+                self.close()
+                return
+            self.parent = parent
+            self.dataset_path = self.parent.parent.path
+            self.subset_path = subset_path
+            self.file_index = 0
+            self.image_files = image_files.copy()
+            self.icon_image = Image.open("icon.png")
+            if not review_all:
+                for f in reversed(image_files):
+                    caption_file = "".join(splitext(f)[:-1]) + ".txt"
+                    caption = self.get_caption_from_file(caption_file)
+                    if num_tokens_from_string(caption, "gpt2") <= 75:
+                        self.image_files.remove(f)
 
+            if len(self.image_files) == 0:
+                showinfo(parent=parent.top,
+                         title="No such files",
+                         message="No images had more than 75 tokens.")
+                self.top = tk.Toplevel(self.parent.top)
+                self.close()
+                return
 
-        self.create_ui()
+            self.icon_image = Image.open("icon.png")
 
+            self.create_ui()
+        except:
+            print(traceback.format_exc())
+           
     def create_ui(self):
         self.top = tk.Toplevel(self.parent.top)
         self.top.title("Manually review captions")
@@ -203,7 +415,7 @@ class manually_review_subset_popup(object):
         self.image_frame.columnconfigure(0, weight=1)
 
         # Display image in image_frame
-        self.image = Image.open("icon.png")
+        self.image = self.icon_image
         self.framed_image = ImageTk.PhotoImage(self.image)
         self.sizer_frame = tk.Frame(self.image_frame,
                                     width=400, height=400,
@@ -334,41 +546,7 @@ class manually_review_subset_popup(object):
         return False
 
     def load_image(self, f):
-        oldgeometry = self.top.geometry()
-        oldminsize = self.top.minsize()
-        oldmaxsize = self.top.maxsize()
-        self.top.minsize(width=self.top.winfo_width(), 
-                         height=self.top.winfo_height())
-        self.top.maxsize(width=self.top.winfo_width(), 
-                         height=self.top.winfo_height())
-        tgt_width = self.sizer_frame.winfo_width()
-        tgt_height = self.sizer_frame.winfo_height()
-        try:
-            self.image = Image.open(f)
-
-            new_width = int(
-                tgt_height * self.image.width / self.image.height)
-            new_height = int(
-                tgt_width * self.image.height / self.image.width)
-
-            if new_width <= tgt_width:
-                resized_image = self.image.resize(
-                    (new_width, tgt_height), 
-                    Image.LANCZOS)
-                
-            else:
-                resized_image = self.image.resize(
-                    (tgt_width, new_height), 
-                    Image.LANCZOS)
-
-            self.framed_image = ImageTk.PhotoImage(resized_image)
-            self.image_label.configure(image=self.framed_image)
-        except:
-            self.image_label.configure(image='')
-
-        self.top.geometry(oldgeometry)
-        self.top.minsize(width=oldminsize[0], height=oldminsize[1])
-        self.top.maxsize(width=oldmaxsize[0], height=oldmaxsize[1])
+        self.image = Image.open(f)
         self.image_resizer()
 
     #Resize image to fit resized window
@@ -399,6 +577,12 @@ class manually_review_subset_popup(object):
                 Image.LANCZOS)
         self.framed_image = ImageTk.PhotoImage(resized_image)
         self.image_label.configure(image=self.framed_image)
+
+    #Move the focus to the prev item in the form
+    def focus_prev_widget(self, event):
+        event.widget.tk_focusPrev().focus()
+        return("break")
+
 
     #Move the focus to the next item in the form
     def focus_next_widget(self, event):
@@ -483,7 +667,7 @@ class manually_review_subset_popup(object):
             self.close()
             return
         self.form_frame.destroy()
-        self.image = Image.open("icon.png")
+        self.image = self.icon_image
         self.framed_image = ImageTk.PhotoImage(self.image)
         self.image_label.configure(image=self.framed_image)
         self.create_form_frame()
@@ -517,7 +701,7 @@ class manually_review_subset_popup(object):
         
         self.statusbar_text.set(
             f"Image {1 + self.file_index}/{len(self.image_files)}: "
-            f"{pathlib.Path(self.image_files[self.file_index]).name}")
+            f"{relpath(pathlib.Path(self.image_files[self.file_index]), self.parent.parent.path)}")
         
         #Enable/disable buttons as appropriate
         if self.file_index > 0:
@@ -529,7 +713,7 @@ class manually_review_subset_popup(object):
             self.next_file_btn["state"] = "normal"
         else:
             self.next_file_btn["state"] = "disabled"
-
+            
         self.update_token_count()
 
 
@@ -1044,7 +1228,6 @@ class generate_lora_subset_popup(object):
                                                     "\nDelete them?",
                                                     parent=self.top,
                                                     icon='warning')
-                print(f"msg_box: {msg_box}")
                 if msg_box is not None:
                     if msg_box == True:
                         for f in stale_files:
@@ -1120,14 +1303,19 @@ class generate_lora_subset_popup(object):
                 caption += item["summary"] + ", "
             
             if(self.include_feature.get()
-               and self.lora_name.get() in item["features"]
-               and item["features"]):
-                caption += item["features"][self.lora_name.get()] + ", "
+               and self.lora_name.get() in item["features"]):
+                feature = item["features"][self.lora_name.get()]
+                if feature == "":
+                    feature = self.lora_name.get()
+                caption += feature + ", "
 
             if self.include_other_features.get():
                 for f in item["features"]:
                     if f != self.lora_name.get() and item["features"][f]:
-                        caption += item["features"][f] + ", "
+                        feature = item["features"][f]
+                        if feature == "":
+                            feature = f
+                        caption += feature + ", "
             
             if self.include_automatic_tags.get() and item["automatic_tags"]:
                 caption += item["automatic_tags"]
@@ -1162,36 +1350,25 @@ class generate_lora_subset_popup(object):
                 filtered_components_or = re.split(",| OR ", self.filter.get())
                 match = False
 
-                print(f"Filtering '{caption}' with '{filtered_components_or}'")
                 for c in filtered_components_or:
-                    print(f"c: {c}")
-
                     #Handle the AND operator
                     match_and = True
                     component_and = c.split(" AND ")
-                    print(f"component_and: {component_and}")
                     for c_and in component_and:
-                        print(f"c_and: {c_and}")
                         invert = False
                         while c_and.strip().startswith("NOT "):
                             c_and = c_and[4:]
                             invert = not invert
 
-                        print(f"processed c_and: {c_and}, invert: {invert}")
                         #Handle the NOT operator
                         cur_match_and = c_and.strip().lower() in caption.lower()
                         if invert:
                             cur_match_and = not cur_match_and
                         match_and &= cur_match_and
 
-
-                    print(f"match_and: {match_and}")
-
                     #Handle the OR operator or comma (treated equivalently)
                     match |= match_and
-                    print(f"match: {match}")
 
-                print(f"final match: {match}\n\n")
                 #If this item doesn't match the filter, skip it.
                 if not match:
                     continue
@@ -1272,7 +1449,6 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
     
     class _main_frame(object):
         def __init__(self, top, window_title, bounce_speed, pb_length):
-            print('top of Main_Frame')
             self.func = func
             # save root reference
             self.top = top
@@ -1342,6 +1518,11 @@ class lora_tag_helper(tk.Tk):
         self.t_pct = 0
         self.r_pct = 1
         self.b_pct = 1
+        self.feature_count = 0
+        self.features = []
+        self.icon_image = Image.open("icon.png")
+
+        self.feature_checklist = []
 
         self.create_ui()
         self.wm_protocol("WM_DELETE_WINDOW", self.quit)
@@ -1352,15 +1533,15 @@ class lora_tag_helper(tk.Tk):
             self.already_initialized = True
             run_func_with_loading_popup(
                     self,
-                    lambda: import_tokenizer_reqs(),
-                    "Importing Tokenizer Requirements...", 
-                    "Importing Tokenizer Requirements...")
-
-            run_func_with_loading_popup(
-                    self,
                     lambda: import_interrogators(), 
                     "Importing Interrogator Requirements...", 
                     "Importing Interrogator Requirements...")
+            run_func_with_loading_popup(
+                    self,
+                    lambda: import_tokenizer_reqs(),
+                    "Importing Tokenizer Requirements...", 
+                    "Importing Tokenizer Requirements...")
+            
 
     #Create all UI elements
     def create_ui(self):
@@ -1382,7 +1563,7 @@ class lora_tag_helper(tk.Tk):
         self.root_frame.rowconfigure(0, weight = 1)
         self.root_frame.columnconfigure(0, weight = 2)
         self.root_frame.columnconfigure(1, weight = 0)
-        self.root_frame.columnconfigure(1, minsize=400)
+        self.root_frame.columnconfigure(1, minsize=600)
 
         self.create_image_frame()
         self.create_form_frame()
@@ -1441,7 +1622,7 @@ class lora_tag_helper(tk.Tk):
         self.image_frame.columnconfigure(0, weight=1)
 
         # Display image in image_frame
-        self.image = Image.open("icon.png")
+        self.image = self.icon_image
         self.framed_image = ImageTk.PhotoImage(self.image)
         self.sizer_frame = tk.Frame(self.image_frame,
                                     width=400, height=400,
@@ -1606,11 +1787,12 @@ class lora_tag_helper(tk.Tk):
         self.add_features_table()
         self.add_automatic_tags_text()        
         self.add_form_buttons()
+        self.add_feature_checklist()
         self.show_form_frame()
 
     #Hide the right hand form controls
     def hide_form_frame(self):
-        self.form_frame.grid_forget()
+        self.form_frame.grid_remove()
 
     #Show the right hand form controls
     def show_form_frame(self):
@@ -1620,7 +1802,7 @@ class lora_tag_helper(tk.Tk):
 
     #Hide the initial "Open a dataset" prompt
     def hide_initial_frame(self):
-        self.initial_frame.grid_forget()
+        self.initial_frame.grid_remove()
 
     #Show the initial "Open a dataset" prompt
     def show_initial_frame(self):
@@ -1659,13 +1841,13 @@ class lora_tag_helper(tk.Tk):
 
         self.artist_name = tk.StringVar(None)
         self.artist_name.set("unknown")
-        artist_name_entry = tk.Entry(self.form_frame,
+        self.artist_name_entry = tk.Entry(self.form_frame,
                                      textvariable=self.artist_name, 
                                      justify="left")
-        artist_name_entry.grid(row=0, column=1, padx=(0, 5), pady=5, sticky="ew")
-        artist_name_entry.bind('<Control-a>', self.select_all)
-        artist_name_entry.focus_set()
-        artist_name_entry.select_range(0, 'end')
+        self.artist_name_entry.grid(row=0, column=1, padx=(0, 5), pady=5, sticky="ew")
+        self.artist_name_entry.bind('<Control-a>', self.select_all)
+        self.artist_name_entry.focus_set()
+        self.artist_name_entry.select_range(0, 'end')
 
     #Add the style query to the form
     def add_style_entry(self):
@@ -1691,6 +1873,11 @@ class lora_tag_helper(tk.Tk):
         title_entry.grid(row=2, column=1, padx=(0, 5), pady=5, sticky="ew")
         title_entry.bind('<Control-a>', self.select_all)
 
+    #Move the focus to the prev item in the form
+    def focus_prev_widget(self, event):
+        event.widget.tk_focusPrev().focus()
+        return("break")
+
     #Move the focus to the next item in the form
     def focus_next_widget(self, event):
         event.widget.tk_focusNext().focus()
@@ -1714,7 +1901,7 @@ class lora_tag_helper(tk.Tk):
         self.features_group = tk.LabelFrame(self.form_frame, 
                                     text="Features")
         self.features_group.grid(row=6, column=0, 
-                            columnspan=3, 
+                            columnspan=2, 
                             padx=5, pady=5,
                             sticky="nsew")
 
@@ -1796,25 +1983,195 @@ class lora_tag_helper(tk.Tk):
                            padx=5, pady=5, 
                            sticky="ew")
         self.bind("<Control-n>", self.next_file)
-        self.bind("<Control-f>", self.next_file)        
+        self.bind("<Control-f>", self.next_file)      
+
+    def feature_clicked(self, iid):
+        self.disable_feature_tracing()
+        try:
+            tv = self.feature_checklist_treeview
+            tv.toggle(iid)
+
+            feature_iids = tv.get_children()
+            noun_iids = []
+            desc_iids = []
+            for feature in feature_iids:
+                for noun in tv.get_children(feature):
+                    noun_iids.append(noun)
+            for noun in noun_iids:
+                for desc in tv.get_children(noun):
+                    desc_iids.append(desc)
+
+            tree = [iid]
+            while tv.parent(tree[0]):
+                tree.insert(0, tv.parent(tree[0]))
+
+
+            #Find the row that matches this feature (if any)
+            for row in range(self.feature_count):
+                if(self.features[row][0]["var"].get().strip() == tree[0].strip()):
+                    break
+
+
+            #Find the last component that matches this noun (if any)
+            desc = self.features[row][1]["var"].get()
+            components = []
+            this_component = ""
+            feature = tv.item(tree[0], "text")[2:].strip()
+            noun = ""
+            adjective = ""
+            if len(tree) > 1:
+                noun = tv.item(tree[1], "text")[2:].strip()
+                if row < self.feature_count:
+                    components = [c.strip() for c in desc.split(",")]
+                    for c in reversed(components):
+                        if c.endswith(noun):
+                            this_component = c
+                            break
+            if len(tree) > 2:
+                adjective = tv.item(tree[2], "text")[2:].strip()
+
+            if tv.checked(iid):
+
+                #Make a new feature row if necessary and set it.
+                if row == self.feature_count:
+                    for row in range(self.feature_count):
+                        if(self.features[row][0]["var"] == ""
+                           and self.features[row][1]["var"]):
+                            break
+
+                self.features[row][0]["var"].set(feature)
+
+                #If this is a noun, and the noun isn't already in the
+                #description, then add it.
+                if len(tree) > 1 and not this_component.endswith(noun):
+                    if desc != "":
+                        desc += f", {noun}"
+                    else:
+                        desc = f"{noun}"
+                    self.features[row][1]["var"].set(desc)
+                    this_component = f"{noun}"
+                    if components != ['']:
+                        components.append(this_component)
+                    else:
+                        components = [this_component]
+
+                #If this is an adjective, and it isn't already in the component,
+                #then prepend it before the noun.
+                if len(tree) > 2 and adjective not in this_component:
+                    new_component = f"{adjective} {noun}".join(this_component.rsplit(noun, 1))
+                    for i in reversed(range(len(components))):
+                        if components[i] == this_component:
+                            components[i] = new_component
+                    self.features[row][1]["var"].set(", ".join(components))
+
+            else:
+                #If this is a feature, remove the entire feature row.
+                if len(tree) == 1 and row != self.feature_count:
+                    self.remove_row(row)
+
+                #If this is a noun, remove the relevant component.
+                if len(tree) == 2 and this_component != "":
+                    components.remove(this_component)
+                    self.features[row][1]["var"].set(", ".join(components))
+
+                #If this is an adjective, remove it from the relevant component.
+                if len(tree) == 3 and adjective in this_component:
+                    new_component = this_component.replace(f"{adjective} ", "")
+                    for i in reversed(range(len(components))):
+                        if components[i] == this_component:
+                            components[i] = new_component.strip()
+                    self.features[row][1]["var"].set(", ".join(components))
+        except:
+            print(traceback.format_exc())
+        self.enable_feature_tracing()
+        self.feature_modified(self.features[0][0]["var"].get())
+
+
+    def add_feature_checklist(self):
+        self.feature_checklist_group = tk.LabelFrame(self.form_frame, 
+                                    text="Features")
+        self.feature_checklist_group.grid(row=0, column=2, 
+                            rowspan=15, 
+                            padx=5, pady=5,
+                            sticky="nsew")
+
+        self.feature_checklist_group.rowconfigure(0, weight=1)
+        self.feature_checklist_group.columnconfigure(0, weight=1,minsize=200)
+
+        bgcolor = self.feature_checklist_group["background"]
+        ttk.Style().configure("Treeview", borderwidth=0, relief=tk.FLAT, background=bgcolor, fieldbackground=bgcolor)
+        self.feature_checklist_treeview = TtkCheckList(self.feature_checklist_group,
+                                                       height=self.feature_count, 
+                                                       separator=treeview_separator,
+                                                       clicked=self.feature_clicked)
+        self.feature_checklist_treeview.grid(row=0, column=0, padx=5, pady=5, sticky="news")
+        self.feature_checklist_treeview.rowconfigure(0, weight=1)
+        self.feature_checklist_treeview.columnconfigure(0, weight=1)
+        # Constructing vertical scrollbar
+        # with treeview
+        self.verscrlbar = ttk.Scrollbar(self.feature_checklist_group,
+                           orient ="vertical",
+                           command = self.feature_checklist_treeview.yview)
+        self.verscrlbar.grid(row=0, column=1, sticky="nes")
+        self.feature_checklist_treeview.configure(yscrollcommand = self.verscrlbar.set)
+        self.update_checklist()
         
+
+    #Add the save and navigation buttons to the right-hand form
+    def update_checklist(self):
+        for item in self.feature_checklist_treeview.get_children():
+           self.feature_checklist_treeview.delete(item)        
+        for item in self.feature_checklist:
+            self.feature_checklist_treeview.add_item(item[0])
+            if item[1]:
+                self.feature_checklist_treeview.check(item[0])
+        self.feature_checklist_treeview.autofit()
+
+    def disable_feature_tracing(self):    
+        for i in range(len(self.features)):
+            for j in range(2):
+                try:
+                    self.features[i][j]["var"].trace_vdelete("w", self.features[i][j]["trace"])
+                except:
+                    pass #Doesn't really matter if we delete a trace that didn't exist.
+
+    def enable_feature_tracing(self):
+        self.disable_feature_tracing()
+        for i in range(len(self.features)):
+            for j in range(2):
+                try:
+                    self.features[i][j]["trace"] = self.features[i][j]["var"].trace("w",
+                        lambda name, index, mode, var=self.features[i][j]["var"]: self.feature_modified(var))
+                except:
+                    print(traceback.format_exc())
 
     #Clear the UI
     def clear_ui(self):
-        self.form_frame.destroy()
-        self.features = []
-        self.image = Image.open("icon.png")
+        self.summary_textbox.delete("1.0", "end")
+        self.automatic_tags_textbox.delete("1.0", "end")
+        self.image = self.icon_image
         self.framed_image = ImageTk.PhotoImage(self.image)
         self.canvas.delete(self.image_handle)
-        self.create_form_frame()
-        self.form_frame.lift()
+
+        self.disable_feature_tracing()
+
+        if self.feature_count > 0:
+            while self.feature_count > 1:
+                self.remove_row(self.feature_count - 1)
+            self.features[0][0]["var"].set("")
+            self.features[0][1]["var"].set("")
+
+        self.enable_feature_tracing()
+
         self.statusbar_text.set("")
 
     #Set the UI to the given item's values
     def set_ui(self, index: int):
         self.clear_ui()
+
         item = self.get_item_from_file(self.image_files[index])
-        f = self.image_files[index]        
+
+        f = self.image_files[index]
         self.load_image(f)
 
         try: 
@@ -1858,28 +2215,118 @@ class lora_tag_helper(tk.Tk):
 
         self.generate_crop_rectangle()
 
+
+
+        self.disable_feature_tracing()
+
         try:
             i = 0
             for k, v in item["features"].items():
-                if(i >= len(self.features)):
-                    self.add_row()                
+                if(i >= self.feature_count):
+                    self.add_row()    
+                self.disable_feature_tracing()            
                 self.features[i][0]["var"].set(k)
                 self.features[i][1]["var"].set(v)
                 i += 1
         except:
-            pass
+            pass       
+
+        if len(self.features) > 0:
+            self.feature_modified(self.features[0][0]["var"])
 
         try:
             self.automatic_tags_textbox.insert("1.0", item["automatic_tags"])
         except:
             pass
+
+        #Enable/disable buttons as appropriate
+        if self.file_index > 0:
+            self.prev_file_btn["state"] = "normal"
+        else:
+            self.prev_file_btn["state"] = "disabled"
+
+        if self.file_index < len(self.image_files) - 1:
+            self.next_file_btn["state"] = "normal"
+        else:
+            self.next_file_btn["state"] = "disabled"
+
         
         self.statusbar_text.set(f"Image {1 + self.file_index}/{len(self.image_files)}: "
-                                f"{pathlib.Path(self.image_files[self.file_index]).name}")
+                                f"{relpath(pathlib.Path(self.image_files[self.file_index]), self.path)}")
+        
        
+
+    #Gather known feature set
+    def update_known_features(self, file, item):
+        relative_path = pathlib.Path(relpath(pathlib.Path(file), self.path))
+        parents = [str(p) for p in relative_path.parents]
+        for p in parents:
+            if p not in self.known_features:
+                self.known_features[p] = {}
+
+        p = parents[0]
+
+        combined_features = {}
+        if p in self.known_features:
+            combined_features = self.known_features[p]
+
+        if "features" in item:
+            for feature in item["features"]:
+                components = item["features"][feature].split(",")
+                if feature not in combined_features:
+                    combined_features[feature] = ""
+                combined_components = combined_features[feature].split(",")
+                    
+                for c in components:
+                    c = c.strip()
+                    if c not in combined_components:
+                        combined_features[feature] += ", " + c                            
+
+        self.known_features.update({p: combined_features})
+                    
+
+    def build_known_feature_checklists(self):
+        self.known_feature_checklists = {}
+        for path in self.known_features:
+            known_checklist = []
+            p = str(path)
+            for name in self.known_features[p]:
+                if name != '':
+                    desc = self.known_features[p][name]
+                    new_item = (name, False)
+
+                    found = False
+                    for parent in pathlib.Path(path).parents:
+                        parent = str(parent)
+                        if parent not in self.known_feature_checklists:
+                            self.known_feature_checklists[parent] = {}
+                        if new_item in self.known_feature_checklists[parent]:
+                            found = True
+
+                    if not found and new_item not in known_checklist:
+                        known_checklist.append(new_item)
+                    components = desc.split(",")
+                    for c in components:
+                        c = c.strip()
+                        if c != '' and c != name:
+                            for c_split in self.split_component(c):
+                                new_item = (name + treeview_separator + c_split, False)
+                                found = False
+                                for parent in pathlib.Path(path).parents:
+                                    if new_item in self.known_feature_checklists[str(parent)]:
+                                        found = True
+                                if not found and new_item not in known_checklist:
+                                    known_checklist.append(new_item)
+            known_checklist.sort()
+            self.known_feature_checklists[path] = known_checklist
+
+        self.known_features = {}
+
+
 
     #Create open dataset action
     def open_dataset(self, event = None):
+        self.known_features = {}
         self.clear_ui()
         self.show_initial_frame()
 
@@ -1916,18 +2363,10 @@ class lora_tag_helper(tk.Tk):
         #Populate JSONs
         for path in self.image_files:
             json_file = splitext(path)[0] + ".json"
-            self.write_item_to_file(self.get_item_from_file(path), json_file)
-
-        #Enable/disable buttons as appropriate
-        if self.file_index > 0:
-            self.prev_file_btn["state"] = "normal"
-        else:
-            self.prev_file_btn["state"] = "disabled"
-
-        if self.file_index < len(self.image_files) - 1:
-            self.next_file_btn["state"] = "normal"
-        else:
-            self.next_file_btn["state"] = "disabled"
+            item = self.get_item_from_file(path)
+            self.update_known_features(path, item)
+            self.write_item_to_file(item, json_file)
+        self.build_known_feature_checklists()
 
         #Point UI to beginning of queue
         if(len(self.image_files) > 0):
@@ -1949,46 +2388,9 @@ class lora_tag_helper(tk.Tk):
             generate_lora_subset_popup(self)
 
     def load_image(self, f):
-        oldgeometry = self.geometry()
-        oldminsize = self.minsize()
-        oldmaxsize = self.maxsize()
-        self.minsize(width=self.winfo_width(), height=self.winfo_height())
-        self.maxsize(width=self.winfo_width(), height=self.winfo_height())
-        tgt_width = self.sizer_frame.winfo_width()
-        tgt_height = self.sizer_frame.winfo_height()
-        try:
-            self.image = Image.open(f)
-
-            new_width = int(
-                tgt_height * self.image.width / self.image.height)
-            new_height = int(
-                tgt_width * self.image.height / self.image.width)
-
-            if new_width <= tgt_width:
-                self.image_width = new_width
-                self.image_height = tgt_height
-            else:
-                self.image_width = tgt_width
-                self.image_height = new_height
-            resized_image = self.image.resize(
-                (new_width, tgt_height), 
-                Image.LANCZOS)
-
-            self.framed_image = ImageTk.PhotoImage(resized_image)
-            center_x = self.sizer_frame.winfo_width() / 2
-            center_y = self.sizer_frame.winfo_height() / 2
-
-            try:
-                self.canvas.delete(self.image_handle)
-            except:
-                pass
-            self.image_handle = self.canvas.create_image(center_x, center_y, anchor="center",image=self.framed_image)
-        except:
-            pass
-        self.geometry(oldgeometry)
-        self.minsize(width=oldminsize[0], height=oldminsize[1])
-        self.maxsize(width=oldmaxsize[0], height=oldmaxsize[1])
+        self.image = Image.open(f)
         self.image_resizer()
+
 
     #Resize image to fit resized window
     def image_resizer(self, e = None):
@@ -2038,37 +2440,149 @@ class lora_tag_helper(tk.Tk):
             self.generate_crop_rectangle()
         except:
             pass
+
     #Remove row from feature table
     def remove_row(self, i: int):
-        self.features[i][0]["entry"].destroy()
-        self.features[i][1]["entry"].destroy()
-        del self.features[i]
+        self.feature_count -= 1
+        if i != self.feature_count:
+            for j in range(i, self.feature_count):
+                self.features[j][0]["var"].set(self.features[j + 1][0]["var"].get())
+                self.features[j][1]["var"].set(self.features[j + 1][1]["var"].get())
+        self.features[self.feature_count][0]["entry"].grid_remove()
+        self.features[self.feature_count][1]["entry"].grid_remove()
+        self.features[self.feature_count][0]["var"].set("")
+        self.features[self.feature_count][1]["var"].set("")
+
+    def split_component(self, c):
+        #Get the parts of speech
+        pos = do_get_pos(c)
+
+        wasalnum = False
+        def rejoin(tokens):
+            joined = ""
+            first = True
+            for t in tokens:
+                if t.text != "":
+                    if not first and str.isalnum(t.text[0]) and wasalnum:
+                        joined += " "
+                    first = False
+                    joined += t.text
+                    wasalnum = str.isalnum(t.text[-1])
+            return joined
+
+        #Rejoin any tokens that were split by a hyphen.
+        fixed_pos = []
+        it = iter(range(len(pos)))
+        for i in it:
+            try:
+                if i < len(pos) - 2:
+                    if pos[i + 1].text[0] == '-':
+                        class token_imitator():
+                            def __init__(self, pos_, text):
+                                self.pos_ = pos_
+                                self.text = text
+                        joined_item = token_imitator(pos[i + 2].pos_, pos[i].text + "-" + pos[i + 2].text)
+                        fixed_pos.append(joined_item)
+                        next(it, None)
+                        next(it, None)
+                    else:
+                        fixed_pos.append(pos[i])
+                else:
+                    fixed_pos.append(pos[i])
+            except:
+                print(traceback.format_exc())
+
+        #If the final component is recognized as any kind of noun,
+        #then use that as the parent.
+        last_word_index = -1
+        for last_word_token in reversed(fixed_pos):
+            if str.isalnum(last_word_token.text[0]):
+                break
+            last_word_index -= 1
+        if len(fixed_pos) > 1 and last_word_token.pos_ in ["NOUN", "PROPN"]:
+            parent = last_word_token.text
+
+            #Split by adjective
+            splits = []
+            this_split = []
+            for c in fixed_pos[:last_word_index]:
+                this_split.append(c)
+                if c.pos_ in ["ADJ", "NUM", "NOUN", "PROPN"]:
+                    splits.append(this_split)
+                    this_split = []
+            
+            if this_split != []:
+                splits.append(this_split)
+                this_split = []
+
+            retval = [parent]
+            for s in splits:
+                retval.append(parent + treeview_separator + rejoin([x for x in s]))
+            
+            return retval
+
+        #If nothing else was detected, return the entire component.
+        return [c]
+
+    def build_checklist_from_features(self):
+        path = relpath(pathlib.Path(self.image_files[self.file_index]).absolute().parent, self.path)
+        parents = [str(p).strip() for p in pathlib.Path(path).parents]
+        parents.insert(0, str(path).strip())
+        self.feature_checklist = []
+        for p in parents:
+            for x in self.known_feature_checklists[str(p)]:
+                if x not in self.feature_checklist:
+                    self.feature_checklist.append(x)
+
+        for row in self.features:
+            name = row[0]["var"].get().strip()
+            if name != '':
+                desc = row[1]["var"].get().strip()            
+                self.feature_checklist.append((name,True))
+                components = desc.split(",")
+                for c in components:
+                    c = c.strip()
+                    if c != '' and c != name:
+                        for c_split in self.split_component(c):
+                            self.feature_checklist.append(
+                                (name + treeview_separator + c_split, True))
+        self.feature_checklist.sort()
+
+        self.update_checklist()
 
     #Callback for when feature is modified
     def feature_modified(self, var: str):
+        self.disable_feature_tracing()
         found_i = None
-        for i in range(len(self.features)):
+        for i in range(self.feature_count):
             for j in range(len(self.features[i])):
                 if self.features[i][j]["var"] is var:
                     found_i = i
+                    found_j = j
 
-        while(len(self.features) > 2
-            and not self.features[-1][0]["var"].get()
-            and not self.features[-1][1]["var"].get()
-            and not self.features[-2][0]["var"].get()
-            and not self.features[-2][1]["var"].get()):
-             if found_i == len(self.features) - 1:
-                 self.remove_row(len(self.features) - 2)
-             else:
-                 self.remove_row(len(self.features) - 1)
-        if(self.features[-1][0]["var"].get()
-           or self.features[-1][1]["var"].get()):
+        for i in range(self.feature_count - 1):
+            if(not self.features[i][0]["var"].get()
+              and not self.features[i][0]["var"].get()):
+                self.remove_row(i)
+                if i < found_i:
+                    self.features[found_i - 1][found_j - 1]["entry"].focus()
+                else:
+                    self.features[found_i][found_j]["entry"].focus()
+
+
+        if(self.features[self.feature_count - 1][0]["var"].get()
+           or self.features[self.feature_count - 1][1]["var"].get()):
             self.add_row()
-            
+
+
+        self.build_checklist_from_features()
+        self.enable_feature_tracing()
+
+
     #Add entry to feature table
     def add_entry(self, i: int, j: int):
         s = tk.StringVar(None)
-        s.trace("w", 
+        t = s.trace("w", 
                 lambda name, index, mode, var=s: self.feature_modified(var))
         if j == 0:
             e = tk.Entry(self.features_group, 
@@ -2083,14 +2597,19 @@ class lora_tag_helper(tk.Tk):
         e.grid(row=i + 1, column=j, 
                sticky="ew")
         e.bind('<Control-a>', self.select_all)        
-        return {"var":s, "entry":e}
+        return {"var":s, "entry":e, "trace": t}
 
     #Add row to feature table
     def add_row(self):
-        row = []
-        for j in range(2):
-            row.append(self.add_entry(len(self.features), j))
-        self.features.append(row)
+        self.feature_count += 1
+        if self.feature_count > len(self.features):
+            row = []
+            for j in range(2):
+                row.append(self.add_entry(self.feature_count, j))
+            self.features.append(row)
+        else:
+            self.features[self.feature_count - 1][0]["entry"].grid()
+            self.features[self.feature_count - 1][1]["entry"].grid()
 
 
     def get_item_from_ui(self):
@@ -2133,10 +2652,14 @@ class lora_tag_helper(tk.Tk):
 
         try:
             features = {}
-            for i in range(len(self.features)):
-                if(self.features[i][0]["var"].get()):
-                    features.update({self.features[i][0]["var"].get():
-                                     self.features[i][1]["var"].get()})
+            for i in range(self.feature_count):
+                key = self.features[i][0]["var"].get()
+                if(key):
+                    extant = ""
+                    val = self.features[i][1]["var"].get()
+                    if key in features:
+                        extant = features[key] + ", "
+                    features.update({key: extant + val})
             item["features"] = features
         except:
             print(traceback.format_exc())
@@ -2205,6 +2728,11 @@ class lora_tag_helper(tk.Tk):
 
     #Update automatic tags in JSON for image file
     def update_automatic_tags(self, path, popup=False):
+        if not interrogator_ready:
+            showwarning(parent=self,
+                        title="Not ready",
+                        message="The interrogator is not yet ready.")
+            return        
         json_file = splitext(path)[0] + ".json"
         item = self.get_item_from_file(json_file)
 
@@ -2221,6 +2749,12 @@ class lora_tag_helper(tk.Tk):
 
     #Update automatic tags in all JSON files
     def update_all_automatic_tags(self, event = None):
+        if not interrogator_ready:
+            showwarning(parent=self,
+                        title="Not ready",
+                        message="The interrogator is not yet ready.")
+            return        
+
         self.save_unsaved_popup()
         popup = tk.Toplevel(self)
         tk.Label(popup, text="Processing subset images...").grid(row=0,column=0)
@@ -2241,6 +2775,11 @@ class lora_tag_helper(tk.Tk):
 
     #Update automatic tags in all JSON files
     def update_ui_automatic_tags(self, event = None):
+        if not interrogator_ready:
+            showwarning(parent=self,
+                        title="Not ready",
+                        message="The interrogator is not yet ready.")
+            return        
         if len(self.image_files) > 0:
             self.save_unsaved_popup()
             self.update_automatic_tags(self.image_files[self.file_index])
@@ -2260,18 +2799,12 @@ class lora_tag_helper(tk.Tk):
         self.clear_ui()
         self.file_index -= 1
         self.set_ui(self.file_index)
+        self.artist_name_entry.focus()
+        class event_imitator():
+            def __init__(self, widget):
+                self.widget = widget
+        self.select_all(event_imitator(self.artist_name_entry))
 
-
-        #Enable/disable buttons as appropriate
-        if self.file_index > 0:
-            self.prev_file_btn["state"] = "normal"
-        else:
-            self.prev_file_btn["state"] = "disabled"
-
-        if self.file_index < len(self.image_files) - 1:
-            self.next_file_btn["state"] = "normal"
-        else:
-            self.next_file_btn["state"] = "disabled"
 
 
 
@@ -2288,18 +2821,12 @@ class lora_tag_helper(tk.Tk):
         self.clear_ui()
         self.file_index += 1
         self.set_ui(self.file_index)
+        self.artist_name_entry.focus()
+        class event_imitator():
+            def __init__(self, widget):
+                self.widget = widget
+        self.select_all(event_imitator(self.artist_name_entry))
         
-        #Enable/disable buttons as appropriate
-        if self.file_index > 0:
-            self.prev_file_btn["state"] = "normal"
-        else:
-            self.prev_file_btn["state"] = "disabled"
-
-        if self.file_index < len(self.image_files) - 1:
-            self.next_file_btn["state"] = "normal"
-        else:
-            self.next_file_btn["state"] = "disabled"
-
     #Ask user if they want to save if needed
     def save_unsaved_popup(self):
         if(len(self.image_files) == 0):
@@ -2312,6 +2839,8 @@ class lora_tag_helper(tk.Tk):
                             message='You have unsaved changes. Save JSON now?')
             if answer:
                 self.write_item_to_file(self.get_item_from_ui(), json_file)
+                path = relpath(pathlib.Path(self.image_files[self.file_index]).absolute().parent, self.path)
+                self.known_feature_checklists[path] = self.feature_checklist
 
     def select_all(self, event):
         # select text
