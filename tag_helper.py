@@ -31,11 +31,8 @@ BALLOT_BOX = "\u2610"
 BALLOT_BOX_WITH_X = "\u2612"
 
 #TODO:
-#Figure out intermittent crash on startup. It probably has to do with the multithreaded import of reqs.
-#Figure out why slow dialog creation/teardown, and minor keyboard stall after dialog closed
 #Eventually: Batch rename/delete feature...Alt click on feature?
 #Eventually: generate output dataset optionally without .jsons, organized in various ways
-#Eventually: Automatic import from summary (of known features)?
 #Eventually: use PNG info as alternative (read-only) source of data, and allow writing it during LoRA subset generation
 #Eventually: search for images with feature (i.e. active filter in main window?)
 
@@ -2298,6 +2295,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                              sticky="ew")
         self.summary_textbox.bind("<Tab>", self.focus_next_widget)
         self.summary_textbox.bind('<Control-a>', self.select_all)
+        self.summary_textbox.bind('<KeyRelease>', self.add_features_from_summary)
 
     #Add the features table to the form
     def add_features_table(self):
@@ -3305,6 +3303,35 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.update()
         self.wait_window(save_defaults_popup(self).top)
         self.update()
+
+    def add_features_from_summary(self, event = None):
+        text = self.summary_textbox.get("1.0", "end")
+        components = text.split(',')
+        words = []
+        for c in components:
+            words.extend(c.split())
+
+        features = {f[0] for f in self.feature_checklist}
+        active_features = {f[0] for f in self.feature_checklist if f[1]}
+
+       
+        features_to_add = {f for f in features if f in words and f not in active_features}
+
+        self.disable_feature_tracing()
+        i = self.feature_count - 1
+        try:
+            for f in features_to_add:
+                self.add_row()
+                self.features[i][0]["var"].set(f)
+                i += 1
+        except:
+            print(traceback.format_exc())
+        self.enable_feature_tracing()
+        self.feature_modified(self.features[0][0]["var"])
+
+        
+
+
 
     def reset(self, event = None):
         self.set_ui(self.file_index, self.get_defaults())
