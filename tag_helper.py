@@ -977,6 +977,7 @@ class manually_review_subset_popup(object):
             self.next_file_btn["state"] = "disabled"
             
         self.update_token_count()
+        self.top.update_idletasks()
 
 
     def select_all(self, event):
@@ -2211,6 +2212,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                               padx=0, pady=0, 
                               sticky="nsew")
         self.initial_frame.lift()
+        self.image_resizer()
 
     #Add the star rating query to the form
     def add_rating_entry(self):
