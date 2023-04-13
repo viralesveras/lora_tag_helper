@@ -1888,6 +1888,7 @@ class lora_tag_helper(TkinterDnD.Tk):
             on_press=self.on_press,
             on_release=self.on_release)
         self.listener.start()
+        self.update()
         self.after(2000, self.import_reqs)
 
     def import_reqs(self, event = None):
@@ -2170,6 +2171,15 @@ class lora_tag_helper(TkinterDnD.Tk):
                                relief=tk.RAISED)
         self.form_frame.columnconfigure(1, weight = 1)
 
+        self.top_group = tk.LabelFrame(self.form_frame, 
+                                    text="")
+        self.top_group.columnconfigure(1, weight = 1)
+
+        self.top_group.grid(row=0, column=0, 
+                          columnspan=2, 
+                          padx=5, pady=5,
+                          sticky="nsew")        
+
         self.add_artist_entry()
         self.add_style_entry()
         self.add_title_entry()
@@ -2227,12 +2237,12 @@ class lora_tag_helper(TkinterDnD.Tk):
 
     #Add the artist query to the form
     def add_artist_entry(self):
-        artist_name_label = tk.Label(self.form_frame, text="Artist: ")
+        artist_name_label = tk.Label(self.top_group, text="Artist: ")
         artist_name_label.grid(row=0, column=0, padx=0, pady=5, sticky="e")
 
         self.artist_name = tk.StringVar(None)
         self.artist_name.set(self.get_defaults()["artist"])
-        self.artist_name_entry = tk.Entry(self.form_frame,
+        self.artist_name_entry = tk.Entry(self.top_group,
                                      textvariable=self.artist_name, 
                                      justify="left")
         self.artist_name_entry.grid(row=0, column=1, padx=(0, 5), pady=5, sticky="ew")
@@ -2242,12 +2252,12 @@ class lora_tag_helper(TkinterDnD.Tk):
 
     #Add the style query to the form
     def add_style_entry(self):
-        style_label = tk.Label(self.form_frame, text="Style: ")
+        style_label = tk.Label(self.top_group, text="Style: ")
         style_label.grid(row=1, column=0, padx=0, pady=5, sticky="e")
 
         self.style = tk.StringVar(None)
         self.style.set(self.get_defaults()["style"])
-        self.style_entry = tk.Entry(self.form_frame,
+        self.style_entry = tk.Entry(self.top_group,
                                      textvariable=self.style, 
                                      justify="left")
         self.style_entry.grid(row=1, column=1, padx=(0, 5), pady=5, sticky="ew")
@@ -2255,12 +2265,12 @@ class lora_tag_helper(TkinterDnD.Tk):
 
     #Add the title query to the form
     def add_title_entry(self):
-        title_label = tk.Label(self.form_frame, text="Title: ")
+        title_label = tk.Label(self.top_group, text="Title: ")
         title_label.grid(row=2, column=0, padx=0, pady=5, sticky="e")
 
         self.title_var = tk.StringVar(None)
         self.title_var.set(self.get_defaults()["title"])
-        self.title_entry = tk.Entry(self.form_frame, textvariable=self.title_var, justify="left")
+        self.title_entry = tk.Entry(self.top_group, textvariable=self.title_var, justify="left")
         self.title_entry.grid(row=2, column=1, padx=(0, 5), pady=5, sticky="ew")
         self.title_entry.bind('<Control-a>', self.select_all)
 
@@ -2325,7 +2335,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.automatic_tags_textbox.bind("<Tab>", self.focus_next_widget)
         self.automatic_tags_textbox.bind('<Control-a>', self.select_all)
 
-        self.form_frame.rowconfigure(11, weight=1)
+        self.form_frame.rowconfigure(9, weight=1)
 
         import_tags_btn = tk.Button(self.form_frame, 
                                   text="Import automatic tags (Ctrl+T)", 
@@ -2677,6 +2687,8 @@ class lora_tag_helper(TkinterDnD.Tk):
         
         self.statusbar_text.set(f"Image {1 + self.file_index}/{len(self.image_files)}: "
                                 f"{relpath(pathlib.Path(self.image_files[self.file_index]), self.path)}")
+
+        self.update_idletasks()
         
        
 
@@ -3152,8 +3164,8 @@ class lora_tag_helper(TkinterDnD.Tk):
             with open(json_file) as f:
                 json_item = json.load(f)
                 item.update(json_item)
-        except:
-            print(traceback.format_exc())
+        except FileNotFoundError:
+            pass
 
         try:
             if item["lora_tag_helper_version"] > 1:
