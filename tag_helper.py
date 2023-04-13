@@ -1,25 +1,29 @@
-from pprint import pprint
-import shutil
-import traceback
 from os import listdir, makedirs, walk, getcwd, utime, remove
 from os.path import isfile, join, splitext, exists, getmtime, relpath
-from tkinter.messagebox import askyesno, showinfo, showwarning, showerror
+import time
+import threading
+import shutil
 import pathlib
+import re
+import traceback
+from PIL import ImageTk, Image
+import json
+
+from tkinterdnd2 import DND_FILES, TkinterDnD
+from tkinter.messagebox import askyesno, showinfo, showwarning, showerror
 import tkinter.filedialog
 import tkinter.ttk
 import tkinter.font
 import tkinter as tk
-from PIL import ImageTk, Image
-import json
-import threading
-import re
-import spacy
-import time
-import tagger
-nlp = spacy.load("en_core_web_sm")
-
 import tkinter as tk
 from tkinter import ttk
+
+import pynput
+from pprint import pprint
+
+import spacy
+
+import tagger
 
 treeview_separator = "\u2192"
 
@@ -27,17 +31,13 @@ BALLOT_BOX = "\u2610"
 BALLOT_BOX_WITH_X = "\u2612"
 
 #TODO:
-#Add/clear value in feature set when checkbox toggled
-#Ctrl+Click to remove from known features (and current image's feature set?)
-#2. Check each subset defaults.json in tree to file to determine default values for folder.
-#3. UI to set folder defaults...Simply Ctrl+Shift+S or separate UI?
-#	- Blank fields should not override parents.
-#   Without any images within a particular tree level, setting defaults for it is impossible unless path is specifiable afterward. 
-# Maybe popup to clarify? It could also specify which items are meant as defaults, obviating the need for some of the logic above.
-#Batch update defaults: Be careful.
-#	- automatic import from summary (of known features)?
-#Drag and drop to jump to image (and/or file browser)
-
+#Figure out intermittent crash on startup. It probably has to do with the multithreaded import of reqs.
+#Figure out why slow dialog creation/teardown, and minor keyboard stall after dialog closed
+#Eventually: Batch rename/delete feature...Alt click on feature?
+#Eventually: generate output dataset optionally without .jsons, organized in various ways
+#Eventually: Automatic import from summary (of known features)?
+#Eventually: use PNG info as alternative (read-only) source of data, and allow writing it during LoRA subset generation
+#Eventually: search for images with feature (i.e. active filter in main window?)
 
 class TtkCheckList(ttk.Treeview):
     def __init__(self, master=None, width=200, clicked=None, separator='.',
@@ -163,7 +163,7 @@ def get_automatic_tags_from_txt_file(image_file):
         with open(txt_file) as f:
             return ' '.join(f.read().split())
     except:
-        pass
+        print(traceback.format_exc())
     return None
 
 use_clip = False
@@ -190,11 +190,15 @@ def import_tokenizer_reqs():
             print("Couldn't load torch or clip, falling back to tiktoken. Token count will be less accurate.")
             import tiktoken
     except:
-        pass
+        print(traceback.format_exc())
     tokenizer_ready = True
 
-
+nlp = None
 def do_get_pos(string):
+    global nlp
+    if not nlp:
+        print("Loading natural language processing model...")
+        nlp = spacy.load("en_core_web_sm")        
     return nlp(string)
 
 #Return approximate number of tokens in string (seems to err on the high side)
@@ -262,7 +266,7 @@ def import_interrogators():
             print("Couldn't load clip interrogator. Won't interrogate images for automatic tags, only TXT.")
             use_interrogate = False
     except:
-        pass
+        print(traceback.format_exc())
     interrogator_ready = True
     
 def do_interrogate(
@@ -332,6 +336,278 @@ def truncate_string_to_max_tokens(string : str):
     while string.endswith(","):
         string = string[:-1]
     return string
+
+
+class save_defaults_popup(object):
+    def __init__(self, parent):
+        self.parent = parent
+
+        self.create_ui()
+
+    def create_ui(self):
+        self.top = tk.Toplevel(self.parent)
+        self.top.title("Save defaults for path in dataset...")
+        self.top.wait_visibility()
+        self.top.grab_set()
+        self.top.rowconfigure(0, weight=1)
+        self.top.columnconfigure(0, weight=1)
+        self.top.minsize(600, 400)
+        self.top.transient(self.parent)
+
+        self.form_frame = tk.Frame(self.top, 
+                                   borderwidth=2,
+                                   relief='raised',)
+        
+        self.form_frame.columnconfigure(1, weight=1)
+        self.form_frame.rowconfigure(5, weight=1)
+
+        #Defaults output location
+        output_path_label = tk.Label(self.form_frame, text="Path: ")
+        output_path_label.grid(row=0, column=0, padx=(5, 0), pady=5, sticky="e")
+
+        self.output_path = tk.StringVar(None)
+        self.output_path.set(relpath(pathlib.Path(self.parent.image_files[self.parent.file_index]).parent, self.parent.path))
+        set_output_path_entry = tk.Entry(self.form_frame,
+                                     textvariable=self.output_path, 
+                                     justify="left")
+        set_output_path_entry.grid(row=0, column=1, 
+                               padx=(0, 5), pady=5, 
+                               sticky="ew")
+        set_output_path_entry.bind('<Control-a>', self.select_all)
+
+        #Browse button
+        browse_btn = tk.Button(self.form_frame, text='Browse...', 
+                               command=self.browse)
+        browse_btn.grid(row=0, column=2, padx=4, pady=4, sticky="sew")
+        self.top.bind("<Control-b>", self.browse)
+
+
+        #Labeled group for options
+        settings_group = tk.LabelFrame(self.form_frame, 
+                                    text="Settings")
+        settings_group.grid(row=2, column=0, 
+                            columnspan=3, 
+                            padx=5, pady=5,
+                            sticky="nsew")
+
+        settings_group.columnconfigure(1, weight=1)
+        defaults = self.parent.get_defaults()
+        #Checkbox for inclusion of artist
+        self.set_artist = tk.BooleanVar(None)
+        self.set_artist.set(self.parent.artist_name.get() != defaults["artist"])
+        set_artist_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_artist,
+            text=f"Set artist:")
+        set_artist_chk.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+
+        self.artist = tk.StringVar(None)
+        self.artist.set(self.parent.artist_name.get())
+        
+        set_artist_entry = tk.Entry(settings_group,
+                                    textvariable=self.artist, 
+                                    justify="left")
+        set_artist_entry.grid(row=0, column=1, 
+                               padx=(0, 5), pady=5, 
+                               sticky="ew")
+        set_artist_entry.bind('<Control-a>', self.select_all)
+        self.artist.trace("w", lambda name, index, mode: 
+                                self.set_artist.set(True))
+
+
+        #Checkbox for inclusion of style
+        self.set_style = tk.BooleanVar(None)
+        self.set_style.set(self.parent.style.get() != defaults["style"])
+        set_style_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_style,
+            text=f"Set style:")
+        set_style_chk.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+
+        self.style = tk.StringVar(None)
+        self.style.set(self.parent.style.get())
+        
+        set_style_entry = tk.Entry(settings_group,
+                                    textvariable=self.style, 
+                                    justify="left")
+        self.style.trace("w", lambda name, index, mode: 
+                                self.set_style.set(True))
+        set_style_entry.grid(row=1, column=1, 
+                               padx=(0, 5), pady=5, 
+                               sticky="ew")
+        set_style_entry.bind('<Control-a>', self.select_all)
+
+        #Checkbox for inclusion of features
+        self.set_features = tk.BooleanVar(None)
+        self.set_features.set(False)
+        set_features_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_features,
+            text=f"Set features:")
+        set_features_chk.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+
+        self.features = tk.StringVar(None)
+        self.features.set(str({f[0]["var"].get(): "" for f in self.parent.features if f[0]["var"].get()}))
+        
+        set_features_entry = tk.Entry(settings_group,
+                                    textvariable=self.features, 
+                                    justify="left")
+        set_features_entry.grid(row=2, column=1, 
+                               padx=(0, 5), pady=5, 
+                               sticky="ew")
+        self.features.trace("w", lambda name, index, mode: 
+                                self.set_features.set(True))
+        set_features_entry.bind('<Control-a>', self.select_all)
+
+        self.include_feature_descriptions = tk.BooleanVar(None)
+        self.include_feature_descriptions.set(False)
+        self.include_feature_descriptions.trace("w", lambda name, index, mode: 
+                                self.toggle_feature_descs())
+        include_feature_descriptions_chk = tk.Checkbutton(
+            settings_group,
+            var=self.include_feature_descriptions,
+            text=f"Include feature descriptions")
+        include_feature_descriptions_chk.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+
+
+        #Labeled group for rating
+        self.set_rating = tk.BooleanVar(None)
+        self.set_rating.set(False)
+        set_rating_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_rating,
+            text=f"Set quality:")
+        set_rating_chk.grid(row=4, column=0, padx=5, pady=5, sticky="w")
+
+        rating_group = tk.LabelFrame(settings_group, 
+                                    text="Quality for Training")
+        rating_group.grid(row=4, column=1, 
+                          padx=5, pady=5,
+                          sticky="nsew")
+
+        self.rating = tk.IntVar()
+        self.rating.set(False)
+        tk.Radiobutton(rating_group, 
+           text=f"Not rated",
+           variable=self.rating, 
+           value=0).grid(row=0, column=0, padx=5, pady=5, sticky="w")
+
+        for i in range(1, 6):
+            tk.Radiobutton(rating_group, 
+               text=f"{i}",
+               variable=self.rating, 
+               value=i).grid(row=0, column=i, sticky="w")
+
+        self.rating.trace("w", lambda name, index, mode: 
+                                self.set_rating.set(True))
+
+        # Cancel button
+        cancel_btn = tk.Button(self.form_frame, text='Cancel', 
+                               command=self.cancel)
+        cancel_btn.grid(row=6, column=0, padx=4, pady=4, sticky="sew")
+        self.top.bind("<Escape>", self.cancel)
+        self.top.bind("<Control-s>", self.save)
+
+        # Save button
+        save_btn = tk.Button(self.form_frame, text='Save (Ctrl+S)', 
+                               command=self.save)
+        save_btn.grid(row=6, column=1,
+                          columnspan=2,
+                          padx=4, pady=4, 
+                          sticky="sew")
+
+        self.form_frame.grid(row=0, column=0, 
+                        padx=0, pady=0, 
+                        sticky="nsew")
+
+
+    def toggle_feature_descs(self):
+        if self.include_feature_descriptions.get():
+            self.features.set(str({f[0]["var"].get(): f[1]["var"].get() for f in self.parent.features if f[0]["var"].get()}))
+        else:
+            self.features.set(str({f[0]["var"].get(): "" for f in self.parent.features if f[0]["var"].get()}))
+
+    def select_all(self, event):
+        # select text
+        try:
+            event.widget.select_range(0, 'end')
+        except:
+            print(traceback.format_exc())
+            event.widget.tag_add("sel", "1.0", "end")
+
+        # move cursor to the end
+        try:
+            event.widget.icursor('end')
+        except:
+            print(traceback.format_exc())
+            event.widget.mark_set("insert", "end")
+
+        #stop propagation
+        return 'break'
+
+    def get_defaults_from_ui(self):
+        defaults = {}
+        if self.set_artist.get():
+            defaults["artist"] = self.artist.get()
+        if self.set_style.get():
+            defaults["style"] = self.style.get()
+        if self.set_features.get():
+            defaults["features"] = self.features.get()
+        if self.set_rating.get():
+            defaults["rating"] = self.rating.get()
+        return defaults           
+
+    def save(self, event = None):
+        dataset_path = self.parent.path
+        path= self.output_path.get()
+        if path.startswith('/'):
+            path = relpath(path, dataset_path)
+
+        if path.startswith('..'):
+            showerror(parent=self.top, title="Error", message="Output path must be in dataset")
+            return
+
+        abs_path = pathlib.Path(dataset_path) / path
+        if not exists(abs_path):
+            showerror(parent=self.top, title="Error", message="Output path must exist")
+            return
+
+        with open(abs_path / "defaults.json", "w") as f:
+            json.dump(self.get_defaults_from_ui(), f, indent=4)
+        self.close()
+
+    def cancel(self, event = None):
+        self.close()
+        return "break"
+
+    def close(self):
+        self.top.grab_release()
+        self.top.destroy()
+        return "break"
+
+    def browse(self, event = None):
+        #Popup folder selection dialog
+        default_dir = self.parent.image_files[self.parent.file_index].parent
+        try:
+            path = tk.filedialog.askdirectory(
+                parent=self.top, 
+                initialdir=default_dir,
+                title="Select a location for subset output")
+        except:
+            print(traceback.format_exc())
+            return
+
+        if path:
+            pl_path = pathlib.Path(relpath(path, self.parent.path))
+            if str(pl_path).startswith(".."):
+                showerror(message=
+                          "Output path must be in dataset")
+                self.output_path.set(relpath(default_dir, self.parent.path))
+            else:
+                self.output_path.set(str(pl_path))
+        return "break"
+
+
 
 class manually_review_subset_popup(object):
     def __init__(self, parent, subset_path, image_files, review_all):
@@ -608,18 +884,6 @@ class manually_review_subset_popup(object):
         self.set_ui(self.file_index)
 
 
-        #Enable/disable buttons as appropriate
-        if self.file_index > 0:
-            self.prev_file_btn["state"] = "normal"
-        else:
-            self.prev_file_btn["state"] = "disabled"
-
-        if self.file_index < len(self.image_files) - 1:
-            self.next_file_btn["state"] = "normal"
-        else:
-            self.next_file_btn["state"] = "disabled"
-
-
 
     #Add UI elements for next file button
     def next_file(self, event = None):
@@ -666,12 +930,10 @@ class manually_review_subset_popup(object):
         if len(self.image_files) == 0:
             self.close()
             return
-        self.form_frame.destroy()
         self.image = self.icon_image
         self.framed_image = ImageTk.PhotoImage(self.image)
         self.image_label.configure(image=self.framed_image)
-        self.create_form_frame()
-        self.form_frame.lift()
+        self.caption_textbox.delete("1.0", "end")
         self.statusbar_text.set("")
 
     def update_token_count(self, event = None):
@@ -693,7 +955,7 @@ class manually_review_subset_popup(object):
                 "1.0", 
                 self.get_caption_from_file(caption_file))
         except:
-            pass
+            print(traceback.format_exc())
 
 
         f = self.image_files[index]        
@@ -722,12 +984,14 @@ class manually_review_subset_popup(object):
         try:
             event.widget.select_range(0, 'end')
         except:
+            print(traceback.format_exc())
             event.widget.tag_add("sel", "1.0", "end")
 
         # move cursor to the end
         try:
             event.widget.icursor('end')
         except:
+            print(traceback.format_exc())
             event.widget.mark_set("insert", "end")
 
         #stop propagation
@@ -1006,10 +1270,47 @@ class generate_lora_subset_popup(object):
                              sticky="ew")
         self.filter_entry.bind('<Control-a>', self.select_all)        
 
-
         self.enable_filtering.trace("w", 
                 lambda name, index, mode: self.on_enable_filtering_modified())
 
+        #Labeled group for rating
+        self.filter_rating = tk.BooleanVar(None)
+        self.filter_rating.set(False)
+        filter_rating_chk = tk.Checkbutton(
+            settings_group,
+            var=self.filter_rating,
+            text=f"Filter quality >= ")
+        filter_rating_chk.grid(row=5, column=1, padx=5, pady=5, sticky="w")
+
+        rating_group = tk.LabelFrame(settings_group, 
+                                    text="Minimum Quality")
+        rating_group.grid(row=5, column=2, 
+                          padx=5, pady=1,
+                          sticky="nsew")
+
+        self.minimum_rating = tk.IntVar()
+        self.minimum_rating.set(False)
+        tk.Radiobutton(rating_group, 
+           text=f"Not rated",
+           variable=self.minimum_rating, 
+           value=0).grid(row=0, column=0, padx=5, pady=1, sticky="w")
+
+        for i in range(1, 6):
+            tk.Radiobutton(rating_group, 
+               text=f"{i}",
+               variable=self.minimum_rating, 
+               value=i).grid(row=0, column=i, pady=1, sticky="w")
+        self.minimum_rating.trace("w", lambda name, index, mode: 
+                        self.filter_rating.set(True))
+
+        #Checkbox for fetching automatic tags if empty
+        self.interrogate_automatic_tags = tk.BooleanVar(None)
+        self.interrogate_automatic_tags.set(False)
+        interrogate_automatic_tags_chk = tk.Checkbutton(
+            settings_group,
+            var=self.interrogate_automatic_tags,
+            text="Interrogate image if automatic tags empty")
+        interrogate_automatic_tags_chk.grid(row=6, column=1, columnspan=2, padx=5, pady=5, sticky="w")
 
         # Cancel button
         cancel_btn = tk.Button(self.form_frame, text='Cancel', 
@@ -1033,12 +1334,14 @@ class generate_lora_subset_popup(object):
         try:
             event.widget.select_range(0, 'end')
         except:
+            print(traceback.format_exc())
             event.widget.tag_add("sel", "1.0", "end")
 
         # move cursor to the end
         try:
             event.widget.icursor('end')
         except:
+            print(traceback.format_exc())
             event.widget.mark_set("insert", "end")
 
         #stop propagation
@@ -1057,6 +1360,7 @@ class generate_lora_subset_popup(object):
                 initialdir=default_dir,
                 title="Select a location for subset output")
         except:
+            print(traceback.format_exc())
             return
 
         if path:
@@ -1096,10 +1400,13 @@ class generate_lora_subset_popup(object):
             "include_feature": self.include_feature.get(),
             "include_other_features": self.include_other_features.get(),
             "include_automatic_tags": self.include_automatic_tags.get(),
+            "interrogate_automatic_tags": False,
             "review_option": self.review_option.get(),
             "steps_per_image": self.steps_per_image_entry.get(),
             "enable_filtering": self.enable_filtering.get(),
-            "filter": self.filter.get()
+            "filter": self.filter.get(),
+            "filter_rating": self.filter_rating.get(),
+            "minimum_rating": self.minimum_rating.get()
         }
         with open(info_path, "w") as f:
             json.dump(info, f, indent=4)
@@ -1113,6 +1420,7 @@ class generate_lora_subset_popup(object):
                 info = json.load(f)
             return info
         except:
+            print(traceback.format_exc())
             return None
         
 
@@ -1142,9 +1450,9 @@ class generate_lora_subset_popup(object):
                            and "steps_per_image" in info):
                             return pathlib.Path(dir).name
                     except:
-                        pass
+                        print(traceback.format_exc())
         except:
-            pass
+            print(traceback.format_exc())
         return "100_default"
         
     #Find the newest appropriate subset in the path and populate info from it
@@ -1169,14 +1477,27 @@ class generate_lora_subset_popup(object):
                 self.steps_per_image_entry.set(info["steps_per_image"])
                 try:
                     self.enable_filtering.set(info["enable_filtering"])
-                except:
+                except KeyError:
                     pass
                 try:
                     self.filter.set(info["filter"])
-                except:
+                except KeyError:
                     pass
+                try:
+                    self.filter_rating.set(info["filter_rating"])
+                except KeyError:
+                    pass
+                try:
+                    self.minimum_rating.set(info["minimum_rating"])
+                except KeyError:
+                    pass
+                try:
+                    self.interrogate_automatic_tags.set(info["interrogate_automatic_tags"])
+                except KeyError:
+                    pass
+
         except:
-            pass
+            print(traceback.format_exc())
         
 
     def generate(self, event = None):
@@ -1250,14 +1571,14 @@ class generate_lora_subset_popup(object):
         progress_bar = tk.ttk.Progressbar(popup, variable=progress_var, maximum=100)
         progress_bar.grid(row=1, column=0)#.pack(fill=tk.X, expand=1, side=tk.BOTTOM)
         popup.pack_slaves()
-        i = 0
+        current_image_index = 0
         output_images = []
         #For each image
         for path in self.parent.image_files:
             #Update progress bar
-            progress_var.set(100 * i / len(self.parent.image_files))
+            progress_var.set(100 * current_image_index / len(self.parent.image_files))
             popup.update()
-            i = i + 1
+            current_image_index += 1
 
             #Load associated JSON and/or TXT as normal
             item = self.parent.get_item_from_file(path)
@@ -1295,8 +1616,7 @@ class generate_lora_subset_popup(object):
                     caption += ", "
 
             if(self.include_artist.get()
-               and item["artist"] 
-               and item["artist"] != "unknown"):
+               and item["artist"]):
                 caption += item["artist"] + ", "
             
             if self.include_summary.get() and item["summary"]:
@@ -1316,6 +1636,12 @@ class generate_lora_subset_popup(object):
                         if feature == "":
                             feature = f
                         caption += feature + ", "
+
+            try:
+                if self.interrogate_automatic_tags.get() and not item["automatic_tags"]:
+                    item["automatic_tags"] = interrogate_automatic_tags(path)
+            except:
+                print(traceback.format_exc())
             
             if self.include_automatic_tags.get() and item["automatic_tags"]:
                 caption += item["automatic_tags"]
@@ -1373,6 +1699,9 @@ class generate_lora_subset_popup(object):
                 if not match:
                     continue
 
+            if self.filter_rating.get() and item["rating"] < self.minimum_rating.get():
+                continue
+
             if self.review_option.get() == 1: #Auto-truncate
                 caption = truncate_string_to_max_tokens(caption)
             with open(str(subset_path / tgt_prefix) + ".txt", "w") as f:
@@ -1395,7 +1724,14 @@ class generate_lora_subset_popup(object):
 
             #Copy JSON to subset folder
             json_file = "".join(splitext(path)[:-1]) + ".json"
-            shutil.copy2(json_file, str(subset_path / tgt_prefix) + ".json")
+            target_json = str(subset_path / tgt_prefix) + ".json"
+            if isfile(json_file):
+                shutil.copy2(json_file, target_json)
+            else:
+                self.parent.write_item_to_file(
+                    self.parent.get_item_from_file(path),
+                    target_json
+                    )
 
 
         popup.destroy()
@@ -1410,7 +1746,7 @@ class generate_lora_subset_popup(object):
         #Pop up box for manual review
         try:
             print(f"About to wait for window: {self.review_option.get()}")
-            if self.review_option.get() > 1:                    
+            if self.review_option.get() > 1: 
                 self.top.wait_window(manually_review_subset_popup(
                         self,
                         subset_path,
@@ -1429,7 +1765,7 @@ class generate_lora_subset_popup(object):
 
             self.close()
         except:
-            pass
+            print(traceback.format_exc())
         
 
 # the given message with a bouncing progress bar will appear for as long as func is running, returns same as if func was run normally
@@ -1440,8 +1776,8 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
     top = tk.Toplevel(parent)
 
     if isinstance(parent, lora_tag_helper):
-        x = parent.winfo_x() + 200
-        y = parent.winfo_y() + 200
+        x = parent.winfo_x() + 50
+        y = parent.winfo_y() + 50
     
         top.geometry(f"+{x}+{y}")
 
@@ -1449,6 +1785,7 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
     
     class _main_frame(object):
         def __init__(self, top, window_title, bounce_speed, pb_length):
+            self.done = False
             self.func = func
             # save root reference
             self.top = top
@@ -1464,7 +1801,7 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
             # the progress bar will be referenced in the "bar handling" and "work" threads
             self.load_bar = tk.ttk.Progressbar(top)
             self.load_bar.pack(padx = 10, pady = (0,10))
-
+            
             self.bar_init()
 
 
@@ -1476,40 +1813,59 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
             self.start_bar_thread.start()
 
         def start_bar(self):
-            # the load_bar needs to be configured for indeterminate amount of bouncing
-            self.load_bar.config(mode='indeterminate', maximum=100, value=0, length = self.pb_length)
-            # 8 here is for speed of bounce
-            self.load_bar.start(self.bounce_speed)            
-#             self.load_bar.start(8)            
+            try:
+                # the load_bar needs to be configured for indeterminate amount of bouncing
+                self.load_bar.config(mode='indeterminate', maximum=100, value=0, length = self.pb_length)
+                # 8 here is for speed of bounce
+                self.load_bar.start(self.bounce_speed)            
+    #             self.load_bar.start(8)            
 
-            self.work_thread = threading.Thread(target=self.work_task, args=())
-            self.work_thread.start()
+                self.work_thread = threading.Thread(target=self.work_task, args=())
+                self.work_thread.start()
 
-            # close the work thread
-            self.work_thread.join()
+                # close the work thread
+                self.work_thread.join()
 
-
-            self.top.destroy()
-#             # stop the indeterminate bouncing
-#             self.load_bar.stop()
-#             # reconfigure the bar so it appears reset
-#             self.load_bar.config(value=0, maximum=0)
-
+                self.done = True
+                self.top.destroy()
+    #             # stop the indeterminate bouncing
+    #             self.load_bar.stop()
+    #             # reconfigure the bar so it appears reset
+    #             self.load_bar.config(value=0, maximum=0)
+            except:
+                print(traceback.format_exc())
         def work_task(self):
             func_return_l.append(func())
 
     # call Main_Frame class with reference to root as top
-    _main_frame(top, window_title, bounce_speed, pb_length)
-    parent.wait_window(top)
-    return func_return_l[0]
+    frame = _main_frame(top, window_title, bounce_speed, pb_length)
+    parent.update()
+    if not frame.done:
+        parent.wait_window(top)
+    parent.update()
+    if len(func_return_l) == 1:
+        return func_return_l[0]
+    else:
+        return func_return_l
+
+
+        
 
 
 #Application class
-class lora_tag_helper(tk.Tk):
+class lora_tag_helper(TkinterDnD.Tk):
 
     #Constructor
     def __init__(self):
         super().__init__()
+
+        self.image_width = 1
+        self.image_height = 1
+        self.image_handle = None
+        self.crop_left_area = None
+        self.crop_top_area = None
+        self.crop_right_area = None
+        self.crop_bottom_area = None
         self.already_initialized = False
         self.image_files = []
         self.file_index = 0
@@ -1521,28 +1877,35 @@ class lora_tag_helper(tk.Tk):
         self.feature_count = 0
         self.features = []
         self.icon_image = Image.open("icon.png")
+        self.ctrl_pressed = False
 
         self.feature_checklist = []
+        self.geometry("1200x600")
 
         self.create_ui()
         self.wm_protocol("WM_DELETE_WINDOW", self.quit)
-        self.bind("<Visibility>", self.import_reqs)
+        self.listener = pynput.keyboard.Listener(
+            on_press=self.on_press,
+            on_release=self.on_release)
+        self.listener.start()
+        self.after(2000, self.import_reqs)
 
-    def import_reqs(self, event):
-        if not self.already_initialized and event.widget is not self:
-            self.already_initialized = True
-            run_func_with_loading_popup(
-                    self,
-                    lambda: import_interrogators(), 
-                    "Importing Interrogator Requirements...", 
-                    "Importing Interrogator Requirements...")
-            run_func_with_loading_popup(
-                    self,
-                    lambda: import_tokenizer_reqs(),
-                    "Importing Tokenizer Requirements...", 
-                    "Importing Tokenizer Requirements...")
-            
-
+    def import_reqs(self, event = None):
+        try:
+            if not self.already_initialized and (event is None or event.widget is not self):
+                self.already_initialized = True
+                run_func_with_loading_popup(
+                        self,
+                        lambda: import_interrogators(), 
+                        "Importing Interrogator Requirements...", 
+                        "Importing Interrogator Requirements...")
+                run_func_with_loading_popup(
+                        self,
+                        lambda: import_tokenizer_reqs(),
+                        "Importing Tokenizer Requirements...", 
+                        "Importing Tokenizer Requirements...")
+        except:
+            print(traceback.format_exc())
     #Create all UI elements
     def create_ui(self):
         # Set window info
@@ -1552,7 +1915,16 @@ class lora_tag_helper(tk.Tk):
         self.create_menu()
         self.create_primary_frame()
 
- 
+        self.drop_target_register(DND_FILES)
+        self.dnd_bind('<<Drop>>', self.handle_drop)
+
+    def handle_drop(self, event):
+        file = pathlib.Path(event.data).absolute()
+        if len(self.image_files) > 0:
+            self.go_to_image(None, file)
+        elif file.is_dir():
+            self.open_dataset(None, file)
+
     #Create primary frame
     def create_primary_frame(self):
         self.root_frame = tk.Frame(self)
@@ -1587,6 +1959,25 @@ class lora_tag_helper(tk.Tk):
                               underline=0, 
                               accelerator="Ctrl+O")
         self.bind("<Control-o>", self.open_dataset)
+
+        file_menu.add_command(label="Go to specific image in dataset...", 
+                              command=self.go_to_image, 
+                              underline=0, 
+                              accelerator="Ctrl+G")
+        self.bind("<Control-g>", self.go_to_image)
+
+        file_menu.add_command(label="Reset this image to defaults...", 
+                              command=self.reset, 
+                              underline=0, 
+                              accelerator="Ctrl+Shift+R")
+        self.bind("<Control-R>", self.reset)
+
+        file_menu.add_command(label="Save as Default...", 
+                              command=self.save_defaults, 
+                              underline=0, 
+                              accelerator="Ctrl+Shift+S")
+        self.bind("<Control-S>", self.save_defaults)
+
 
         file_menu.add_command(label="Generate Lora subset...", 
                               command=self.generate_lora_subset, 
@@ -1710,7 +2101,7 @@ class lora_tag_helper(tk.Tk):
             if self.crop_bottom_area:
                 self.canvas.delete(self.crop_bottom_area)
         except:
-            pass
+            print(traceback.format_exc())
 
         l, t = self.pct_to_coord(self.l_pct, self.t_pct)
         r, b = self.pct_to_coord(self.r_pct, self.b_pct)
@@ -1822,7 +2213,7 @@ class lora_tag_helper(tk.Tk):
                           sticky="nsew")
 
         self.rating = tk.IntVar()
-        self.rating.set(0)
+        self.rating.set(self.get_defaults()["rating"])
         tk.Radiobutton(rating_group, 
            text=f"Not rated",
            variable=self.rating, 
@@ -1840,7 +2231,7 @@ class lora_tag_helper(tk.Tk):
         artist_name_label.grid(row=0, column=0, padx=0, pady=5, sticky="e")
 
         self.artist_name = tk.StringVar(None)
-        self.artist_name.set("unknown")
+        self.artist_name.set(self.get_defaults()["artist"])
         self.artist_name_entry = tk.Entry(self.form_frame,
                                      textvariable=self.artist_name, 
                                      justify="left")
@@ -1855,12 +2246,12 @@ class lora_tag_helper(tk.Tk):
         style_label.grid(row=1, column=0, padx=0, pady=5, sticky="e")
 
         self.style = tk.StringVar(None)
-        self.style.set("")
-        style_entry = tk.Entry(self.form_frame,
+        self.style.set(self.get_defaults()["style"])
+        self.style_entry = tk.Entry(self.form_frame,
                                      textvariable=self.style, 
                                      justify="left")
-        style_entry.grid(row=1, column=1, padx=(0, 5), pady=5, sticky="ew")
-        style_entry.bind('<Control-a>', self.select_all)
+        self.style_entry.grid(row=1, column=1, padx=(0, 5), pady=5, sticky="ew")
+        self.style_entry.bind('<Control-a>', self.select_all)
 
     #Add the title query to the form
     def add_title_entry(self):
@@ -1868,10 +2259,10 @@ class lora_tag_helper(tk.Tk):
         title_label.grid(row=2, column=0, padx=0, pady=5, sticky="e")
 
         self.title_var = tk.StringVar(None)
-        self.title_var.set("untitled")
-        title_entry = tk.Entry(self.form_frame, textvariable=self.title_var, justify="left")
-        title_entry.grid(row=2, column=1, padx=(0, 5), pady=5, sticky="ew")
-        title_entry.bind('<Control-a>', self.select_all)
+        self.title_var.set(self.get_defaults()["title"])
+        self.title_entry = tk.Entry(self.form_frame, textvariable=self.title_var, justify="left")
+        self.title_entry.grid(row=2, column=1, padx=(0, 5), pady=5, sticky="ew")
+        self.title_entry.bind('<Control-a>', self.select_all)
 
     #Move the focus to the prev item in the form
     def focus_prev_widget(self, event):
@@ -1944,7 +2335,13 @@ class lora_tag_helper(tk.Tk):
                              padx=5, pady=5, 
                              sticky="ew")
         
+        #On Linux at least, Ctrl-t has a really annoying default behavior that swaps two characters.
         self.bind("<Control-t>", self.update_ui_automatic_tags)
+        self.artist_name_entry.bind("<Control-t>", self.update_ui_automatic_tags)
+        self.style_entry.bind("<Control-t>", self.update_ui_automatic_tags)
+        self.title_entry.bind("<Control-t>", self.update_ui_automatic_tags)
+        self.summary_textbox.bind("<Control-t>", self.update_ui_automatic_tags)
+        self.automatic_tags_textbox.bind("<Control-t>", self.update_ui_automatic_tags)
 
         save_json_btn = tk.Button(self.form_frame, 
                                   text="Save JSON (Ctrl+S)", 
@@ -1985,11 +2382,28 @@ class lora_tag_helper(tk.Tk):
         self.bind("<Control-n>", self.next_file)
         self.bind("<Control-f>", self.next_file)      
 
-    def feature_clicked(self, iid):
+
+    def on_press(self, key):
+        if key == pynput.keyboard.Key.ctrl:
+            self.ctrl_pressed = True
+
+    def on_release(self, key):
+        if key == pynput.keyboard.Key.ctrl:
+            self.ctrl_pressed = False
+
+    def feature_clicked(self, iid):        
         self.disable_feature_tracing()
-        try:
-            tv = self.feature_checklist_treeview
-            tv.toggle(iid)
+        try:            
+            tv = self.feature_checklist_treeview                
+
+            deleting = False
+            if self.ctrl_pressed:
+                print(f"Delete {iid}")
+                deleting = True
+                tv.uncheck(iid)
+            else:
+                tv.toggle(iid)
+
 
             feature_iids = tv.get_children()
             noun_iids = []
@@ -2081,6 +2495,16 @@ class lora_tag_helper(tk.Tk):
                         if components[i] == this_component:
                             components[i] = new_component.strip()
                     self.features[row][1]["var"].set(", ".join(components))
+
+            if deleting:
+                tv.delete(iid)
+                relative_path = relpath(pathlib.Path(self.image_files[self.file_index]).absolute(), self.path)
+                parents = [str(p) for p in pathlib.Path(relative_path).parents]
+                for p in self.known_feature_checklists:
+                    if p in parents:
+                        self.known_feature_checklists[p] = [x for x in self.known_feature_checklists[p] if not x[0].startswith(iid)]
+                pprint(self.known_feature_checklists)
+                          
         except:
             print(traceback.format_exc())
         self.enable_feature_tracing()
@@ -2130,20 +2554,16 @@ class lora_tag_helper(tk.Tk):
     def disable_feature_tracing(self):    
         for i in range(len(self.features)):
             for j in range(2):
-                try:
+                if self.features[i][j]["trace"]:
                     self.features[i][j]["var"].trace_vdelete("w", self.features[i][j]["trace"])
-                except:
-                    pass #Doesn't really matter if we delete a trace that didn't exist.
+                    self.features[i][j]["trace"] = None
 
     def enable_feature_tracing(self):
         self.disable_feature_tracing()
         for i in range(len(self.features)):
             for j in range(2):
-                try:
-                    self.features[i][j]["trace"] = self.features[i][j]["var"].trace("w",
-                        lambda name, index, mode, var=self.features[i][j]["var"]: self.feature_modified(var))
-                except:
-                    print(traceback.format_exc())
+                self.features[i][j]["trace"] = self.features[i][j]["var"].trace("w",
+                    lambda name, index, mode, var=self.features[i][j]["var"]: self.feature_modified(var))
 
     #Clear the UI
     def clear_ui(self):
@@ -2166,10 +2586,14 @@ class lora_tag_helper(tk.Tk):
         self.statusbar_text.set("")
 
     #Set the UI to the given item's values
-    def set_ui(self, index: int):
+    def set_ui(self, index: int, item = None):
+        if len(self.image_files) == 0 or index > len(self.image_files):
+            return
+        
         self.clear_ui()
 
-        item = self.get_item_from_file(self.image_files[index])
+        if item is None:
+            item = self.get_item_from_file(self.image_files[index])
 
         f = self.image_files[index]
         self.load_image(f)
@@ -2177,33 +2601,33 @@ class lora_tag_helper(tk.Tk):
         try: 
             self.artist_name.set(item["artist"])
         except: 
-            pass
+            print(traceback.format_exc())
 
         try: 
             self.style.set(item["artist"])
         except: 
-            pass
+            print(traceback.format_exc())
 
         try:
             self.title_var.set(item["title"])
         except:
-            pass
+            print(traceback.format_exc())
 
 
         try:
             self.style.set(item["style"])
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             self.rating.set(item["rating"])
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             self.summary_textbox.insert("1.0", item["summary"])
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             self.l_pct = item["crop"][0]
@@ -2211,7 +2635,7 @@ class lora_tag_helper(tk.Tk):
             self.r_pct = item["crop"][2]
             self.b_pct = item["crop"][3]
         except:
-            pass
+            print(traceback.format_exc())
 
         self.generate_crop_rectangle()
 
@@ -2229,7 +2653,7 @@ class lora_tag_helper(tk.Tk):
                 self.features[i][1]["var"].set(v)
                 i += 1
         except:
-            pass       
+            print(traceback.format_exc())
 
         if len(self.features) > 0:
             self.feature_modified(self.features[0][0]["var"])
@@ -2237,7 +2661,7 @@ class lora_tag_helper(tk.Tk):
         try:
             self.automatic_tags_textbox.insert("1.0", item["automatic_tags"])
         except:
-            pass
+            print(traceback.format_exc())
 
         #Enable/disable buttons as appropriate
         if self.file_index > 0:
@@ -2325,7 +2749,7 @@ class lora_tag_helper(tk.Tk):
 
 
     #Create open dataset action
-    def open_dataset(self, event = None):
+    def open_dataset(self, event = None, directory = None):
         self.known_features = {}
         self.clear_ui()
         self.show_initial_frame()
@@ -2335,16 +2759,19 @@ class lora_tag_helper(tk.Tk):
         self.image_files = []
 
         #Popup folder selection dialog
-        try:
-            self.path = tk.filedialog.askdirectory(
-                parent=self, 
-                initialdir="./dataset",
-                title="Select a dataset")
-            if not self.path:
+        if directory is None:
+            try:
+                self.path = tk.filedialog.askdirectory(
+                    parent=self, 
+                    initialdir="./dataset",
+                    title="Select a dataset")
+                if not self.path:
+                    return
+            except:
+                print(traceback.format_exc())
                 return
-        except:
-            return
-        
+        else:
+            self.path = directory                    
 
         #Get supported extensions
         exts = Image.registered_extensions()
@@ -2365,7 +2792,7 @@ class lora_tag_helper(tk.Tk):
             json_file = splitext(path)[0] + ".json"
             item = self.get_item_from_file(path)
             self.update_known_features(path, item)
-            self.write_item_to_file(item, json_file)
+            #self.write_item_to_file(item, json_file)
         self.build_known_feature_checklists()
 
         #Point UI to beginning of queue
@@ -2385,11 +2812,16 @@ class lora_tag_helper(tk.Tk):
         if len(self.image_files) > 0:
             self.save_unsaved_popup()
             #Pop up dialog to gather information and perform generation
-            generate_lora_subset_popup(self)
+            self.update()
+            self.wait_window(generate_lora_subset_popup(self).top)
+            self.update()
 
     def load_image(self, f):
-        self.image = Image.open(f)
-        self.image_resizer()
+        try:
+            self.image = Image.open(f)
+            self.image_resizer()
+        except:
+            print(traceback.format_exc())
 
 
     #Resize image to fit resized window
@@ -2398,7 +2830,7 @@ class lora_tag_helper(tk.Tk):
             l, t = self.pct_to_coord(self.l_pct, self.t_pct)
             r, b = self.pct_to_coord(self.r_pct, self.b_pct)
         except:
-            pass
+            print(traceback.format_exc())
 
         tgt_width = self.image_frame.winfo_width() - 4
         tgt_height = self.image_frame.winfo_height() - 4
@@ -2431,15 +2863,16 @@ class lora_tag_helper(tk.Tk):
         center_y = self.sizer_frame.winfo_height() / 2
 
         try:
-            self.canvas.delete(self.image_handle)
+            if self.image_handle:
+                self.canvas.delete(self.image_handle)
         except:
-            pass
+            print(traceback.format_exc())
         self.image_handle = self.canvas.create_image(center_x, center_y, anchor="center",image=self.framed_image)
 
         try:
             self.generate_crop_rectangle()
         except:
-            pass
+            print(traceback.format_exc())
 
     #Remove row from feature table
     def remove_row(self, i: int):
@@ -2593,10 +3026,11 @@ class lora_tag_helper(tk.Tk):
             e = tk.Entry(self.features_group, 
                          textvariable=s, 
                          width=3,
-                         justify="left")
+                         justify="left")            
         e.grid(row=i + 1, column=j, 
                sticky="ew")
         e.bind('<Control-a>', self.select_all)        
+        e.bind("<Control-t>", self.update_ui_automatic_tags)
         return {"var":s, "entry":e, "trace": t}
 
     #Add row to feature table
@@ -2613,32 +3047,31 @@ class lora_tag_helper(tk.Tk):
 
 
     def get_item_from_ui(self):
-        item = {"lora_tag_helper_version": 1}
-
+        item = self.get_defaults()
         try: 
             item["artist"] = self.artist_name.get()
         except: 
-            pass
+            print(traceback.format_exc())
 
         try: 
             item["style"] = self.style.get()
         except: 
-            pass
+            print(traceback.format_exc())
 
         try:
             item["title"] = self.title_var.get()
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             item["rating"] = self.rating.get()
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             item["summary"] = ' '.join(self.summary_textbox.get("1.0", "end").split())
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             item["crop"] = [
@@ -2648,7 +3081,7 @@ class lora_tag_helper(tk.Tk):
                 self.b_pct
             ]
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             features = {}
@@ -2667,28 +3100,50 @@ class lora_tag_helper(tk.Tk):
         try:
             item["automatic_tags"] = ' '.join(self.automatic_tags_textbox.get("1.0", "end").split())
         except:
-            pass
+            print(traceback.format_exc())
 
         return item
+    
+    def get_defaults(self, path = None):
+        if path is None:
+            if len(self.image_files) == 0:
+                path = "./dataset/default.png"
+            else:
+                path = self.image_files[self.file_index]
+                
+        defaults = {"lora_tag_helper_version": 1,
+                    "title":splitext(pathlib.Path(path).name)[0],
+                    "artist": "unknown",
+                    "style": "photo",
+                    "rating": 0,
+                    "summary": "",
+                    "features": {},
+                    "crop": [0, 0, 1, 1],
+                    "automatic_tags": ""}
 
+        if len(self.image_files) == 0:
+            return defaults
+        
+        path = pathlib.Path(path)        
+        paths = [p for p in reversed(pathlib.Path(path).parents) if p not in pathlib.Path(self.path).parents]
+
+        for p in paths:
+            json_file = p / "defaults.json"
+            if isfile(json_file):
+                with open(json_file) as f:
+                    defaults.update(json.load(f))
+        return defaults
+    
     def get_item_from_file(self, path):
         #Read filename into title
-        item = {"lora_tag_helper_version": 1,
-                "title":splitext(pathlib.Path(path).name)[0],
-                "artist": "unknown",
-                "style": "unknown",
-                "rating": 0,
-                "summary": "",
-                "features": {},
-                "crop": [0, 0, 1, 1],
-                "automatic_tags": ""}
+        item = self.get_defaults(path)
 
         #If .txt available, read into automated caption
         txt_file = splitext(path)[0] + ".txt"
         try:
             with open(txt_file) as f:
                 item["automatic_tags"] = ' '.join(f.read().split())
-        except:
+        except (FileNotFoundError) as error:
             pass
 
         #If available, parse JSON into fields
@@ -2698,13 +3153,13 @@ class lora_tag_helper(tk.Tk):
                 json_item = json.load(f)
                 item.update(json_item)
         except:
-            pass
+            print(traceback.format_exc())
 
         try:
             if item["lora_tag_helper_version"] > 1:
                 print("Warning: file generated by newer version of lora_tag_helper")
         except:
-            pass
+            print(traceback.format_exc())
 
         return item
 
@@ -2779,11 +3234,12 @@ class lora_tag_helper(tk.Tk):
             showwarning(parent=self,
                         title="Not ready",
                         message="The interrogator is not yet ready.")
-            return        
+            return "break"    
         if len(self.image_files) > 0:
             self.save_unsaved_popup()
             self.update_automatic_tags(self.image_files[self.file_index])
             self.set_ui(self.file_index)
+        return "break"
 
 
     #Add UI elements for prev file button
@@ -2826,6 +3282,41 @@ class lora_tag_helper(tk.Tk):
             def __init__(self, widget):
                 self.widget = widget
         self.select_all(event_imitator(self.artist_name_entry))
+
+    def save_defaults(self, event = None):
+        if len(self.image_files) == 0:
+            showerror(parent=self, title="Error", message="Dataset must be open")
+            return
+        #Pop up dialog to save default settings for path
+        self.update()
+        self.wait_window(save_defaults_popup(self).top)
+        self.update()
+
+    def reset(self, event = None):
+        self.set_ui(self.file_index, self.get_defaults())
+        
+
+    def go_to_image(self, event = None, file = None):
+        if not file:
+            file = tk.filedialog.askopenfilename(parent=self.root_frame, initialdir=self.path, title="Select an image in the dataset", filetypes =[('Supported images', [f"*{x}" for x in Image.registered_extensions()])])
+        if file.is_dir():
+            file = pathlib.Path(file).absolute()
+            i = 0
+            for f in self.image_files:
+                if str(f).startswith(str(file)):
+                    self.file_index = i
+                    self.set_ui(i)
+                    break
+                i += 1
+        elif file:
+            try:
+                i = self.image_files.index(pathlib.Path(file).absolute())
+                self.file_index = i
+                self.set_ui(i)
+            except ValueError:
+                print(f"Warning: Supplied path {file} is not an image in the dataset. Ignoring.")
+
+
         
     #Ask user if they want to save if needed
     def save_unsaved_popup(self):
@@ -2847,12 +3338,14 @@ class lora_tag_helper(tk.Tk):
         try:
             event.widget.select_range(0, 'end')
         except:
+            print(traceback.format_exc())
             event.widget.tag_add("sel", "1.0", "end")
 
         # move cursor to the end
         try:
             event.widget.icursor('end')
         except:
+            print(traceback.format_exc())
             event.widget.mark_set("insert", "end")
 
         #stop propagation
@@ -2865,12 +3358,10 @@ class lora_tag_helper(tk.Tk):
         self.destroy()
 
 
-
-
 #Application entry point
 if __name__ == "__main__":
+    global app
     #Instantiate the application
     app = lora_tag_helper()
-    app.wait_visibility()
     #Let the user do their thing
     app.mainloop()
