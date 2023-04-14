@@ -1881,6 +1881,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.features = []
         self.icon_image = Image.open("icon.png")
         self.ctrl_pressed = False
+        self.prompt = ""
 
         self.feature_checklist = []
         self.geometry("1200x600")
@@ -2609,11 +2610,12 @@ class lora_tag_helper(TkinterDnD.Tk):
         
         self.clear_ui()
 
+        f = self.image_files[index]
+        self.load_image(f)
+
         if item is None:
             item = self.get_item_from_file(self.image_files[index])
 
-        f = self.image_files[index]
-        self.load_image(f)
 
         try: 
             self.artist_name.set(item["artist"])
@@ -2839,6 +2841,17 @@ class lora_tag_helper(TkinterDnD.Tk):
         try:
             self.image = Image.open(f)
             self.image_resizer()
+
+            prompt = ""
+            try:
+                self.image.load()  # Needed only for .png EXIF data
+                prompt = " ".join(self.image.info['parameters'].split("Negative prompt: ")[0].split())
+                prompt = re.sub(r"<.*>", "", prompt).strip().strip(",").strip()
+            except:
+                pass
+
+            self.prompt = prompt
+            print(f"Prompt: '{prompt}'")
         except:
             print(traceback.format_exc())
 
@@ -3135,7 +3148,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                     "artist": "unknown",
                     "style": "photo",
                     "rating": 0,
-                    "summary": "",
+                    "summary": self.prompt,
                     "features": {},
                     "crop": [0, 0, 1, 1],
                     "automatic_tags": ""}
