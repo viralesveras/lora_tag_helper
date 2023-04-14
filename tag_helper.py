@@ -1923,7 +1923,9 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.dnd_bind('<<Drop>>', self.handle_drop)
 
     def handle_drop(self, event):
+        print(f"Event.data: {event.data}")
         file = pathlib.Path(event.data).absolute()
+        print(f"Absolute path: {file}")
         if len(self.image_files) > 0:
             self.go_to_image(None, file)
         elif file.is_dir():
@@ -3356,7 +3358,9 @@ class lora_tag_helper(TkinterDnD.Tk):
                 i += 1
         elif file:
             try:
+                print(f"File in go_to_image: {file}")
                 i = self.image_files.index(pathlib.Path(file).absolute())
+                print(f"Index in go_to_image: {i}")
                 self.file_index = i
                 self.set_ui(i)
             except ValueError:
