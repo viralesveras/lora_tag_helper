@@ -3193,12 +3193,21 @@ class lora_tag_helper(TkinterDnD.Tk):
                       message="Could not save JSON file")
             print(traceback.format_exc())
         
+    def update_known_feature_checklists(self):
+        path = relpath(pathlib.Path(self.image_files[self.file_index]).absolute().parent, self.path)
+        temp_checklist = self.feature_checklist
+        for i in range(len(temp_checklist)):
+            temp_checklist[i] = (temp_checklist[i][0], False)
+        self.known_feature_checklists[path] = temp_checklist
+        
 
     #Add UI elements for save JSON button
     def save_json(self, event = None):
+        file = self.image_files[self.file_index]
         self.write_item_to_file(
             self.get_item_from_ui(),
-            splitext(self.image_files[self.file_index])[0] + ".json")
+            splitext(file)[0] + ".json")
+        self.update_known_feature_checklists()
 
     #Update automatic tags in JSON for image file
     def update_automatic_tags(self, path, popup=False):
@@ -3380,8 +3389,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                             message='You have unsaved changes. Save JSON now?')
             if answer:
                 self.write_item_to_file(self.get_item_from_ui(), json_file)
-                path = relpath(pathlib.Path(self.image_files[self.file_index]).absolute().parent, self.path)
-                self.known_feature_checklists[path] = self.feature_checklist
+                self.update_known_feature_checklists()
 
     def select_all(self, event):
         # select text
