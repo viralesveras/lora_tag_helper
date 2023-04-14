@@ -1893,7 +1893,7 @@ class lora_tag_helper(TkinterDnD.Tk):
             on_release=self.on_release)
         self.listener.start()
         self.update()
-        self.after(2000, self.import_reqs)
+        self.after(1000, self.import_reqs)
 
     def import_reqs(self, event = None):
         try:
@@ -1924,9 +1924,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.dnd_bind('<<Drop>>', self.handle_drop)
 
     def handle_drop(self, event):
-        print(f"Event.data: {event.data}")
-        file = pathlib.Path(event.data).absolute()
-        print(f"Absolute path: {file}")
+        file = pathlib.Path(event.data)
         if len(self.image_files) > 0:
             self.go_to_image(None, file)
         elif file.is_dir():
@@ -2826,7 +2824,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                         title="Empty Dataset",
                         message="No supported images found in dataset")
             self.show_initial_frame()
-
+        
 
     #Create open dataset action
     def generate_lora_subset(self, event = None):
@@ -3369,8 +3367,9 @@ class lora_tag_helper(TkinterDnD.Tk):
     def go_to_image(self, event = None, file = None):
         if not file:
             file = tk.filedialog.askopenfilename(parent=self.root_frame, initialdir=self.path, title="Select an image in the dataset", filetypes =[('Supported images', [f"*{x}" for x in Image.registered_extensions()])])
+            if file:
+                file = pathlib.Path(file).absolute()
         if file.is_dir():
-            file = pathlib.Path(file).absolute()
             i = 0
             for f in self.image_files:
                 if str(f).startswith(str(file)):
@@ -3381,7 +3380,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         elif file:
             try:
                 print(f"File in go_to_image: {file}")
-                i = self.image_files.index(pathlib.Path(file).absolute())
+                i = self.image_files.index(pathlib.Path(file))
                 print(f"Index in go_to_image: {i}")
                 self.file_index = i
                 self.set_ui(i)
