@@ -444,7 +444,7 @@ class save_defaults_popup(object):
         set_features_chk.grid(row=2, column=0, padx=5, pady=5, sticky="w")
 
         self.features = tk.StringVar(None)
-        self.features.set(str({f[0]["var"].get(): "" for f in self.parent.features if f[0]["var"].get()}))
+        self.features.set(json.dumps({f[0]["var"].get(): "" for f in self.parent.features if f[0]["var"].get()}))
         
         set_features_entry = tk.Entry(settings_group,
                                     textvariable=self.features, 
@@ -520,9 +520,9 @@ class save_defaults_popup(object):
 
     def toggle_feature_descs(self):
         if self.include_feature_descriptions.get():
-            self.features.set(str({f[0]["var"].get(): f[1]["var"].get() for f in self.parent.features if f[0]["var"].get()}))
+            self.features.set(json.dumps({f[0]["var"].get(): f[1]["var"].get() for f in self.parent.features if f[0]["var"].get()}))
         else:
-            self.features.set(str({f[0]["var"].get(): "" for f in self.parent.features if f[0]["var"].get()}))
+            self.features.set(json.dumps({f[0]["var"].get(): "" for f in self.parent.features if f[0]["var"].get()}))
 
     def select_all(self, event):
         # select text
@@ -549,7 +549,12 @@ class save_defaults_popup(object):
         if self.set_style.get():
             defaults["style"] = self.style.get()
         if self.set_features.get():
-            defaults["features"] = self.features.get()
+            try:
+                defaults["features"] = json.loads(self.features.get())
+            except:
+                print(traceback.format_exc())
+                showerror(parent=self.top, title="Error", message="Features must be valid json dict.")
+                return
         if self.set_rating.get():
             defaults["rating"] = self.rating.get()
         return defaults           
