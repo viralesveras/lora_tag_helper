@@ -159,8 +159,8 @@ def get_automatic_tags_from_txt_file(image_file):
     try:
         with open(txt_file) as f:
             return ' '.join(f.read().split())
-    except:
-        print(traceback.format_exc())
+    except FileNotFoundError:
+        pass
     return None
 
 use_clip = False
@@ -2682,7 +2682,9 @@ class lora_tag_helper(TkinterDnD.Tk):
             self.feature_modified(self.features[0][0]["var"])
 
         try:
-            self.automatic_tags_textbox.insert("1.0", item["automatic_tags"])
+            if "automatic_tags" in item:
+                if item["automatic_tags"]:
+                    self.automatic_tags_textbox.insert("1.0", item["automatic_tags"])
         except:
             print(traceback.format_exc())
 
@@ -3228,7 +3230,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         file = self.image_files[self.file_index]
         item = self.get_item_from_ui()
         defaults = self.get_defaults()
-        trimmed_item = {item[x] for x in item if x in defaults and item[x] != defaults[x]}
+        trimmed_item = {x:item[x] for x in item if x in defaults and item[x] != defaults[x]}
         self.write_item_to_file(
             trimmed_item,
             splitext(file)[0] + ".json")
