@@ -1924,7 +1924,13 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.dnd_bind('<<Drop>>', self.handle_drop)
 
     def handle_drop(self, event):
-        file = pathlib.Path(event.data)
+        str_file = event.data
+        try:
+            if str_file and str_file[0] == "{" and str_file[-1]== "}":
+                str_file = str_file[1:-1]
+        except:
+            pass                
+        file = pathlib.Path(str_file)
         if len(self.image_files) > 0:
             self.go_to_image(None, file)
         elif file.is_dir():
@@ -3379,12 +3385,11 @@ class lora_tag_helper(TkinterDnD.Tk):
                 i += 1
         elif file:
             try:
-                print(f"File in go_to_image: {file}")
                 i = self.image_files.index(pathlib.Path(file))
-                print(f"Index in go_to_image: {i}")
                 self.file_index = i
                 self.set_ui(i)
             except ValueError:
+                print(traceback.format_exc())
                 print(f"Warning: Supplied path {file} is not an image in the dataset. Ignoring.")
 
 
