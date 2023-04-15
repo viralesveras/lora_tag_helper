@@ -2855,7 +2855,6 @@ class lora_tag_helper(TkinterDnD.Tk):
                 pass
 
             self.prompt = prompt
-            print(f"Prompt: '{prompt}'")
         except:
             print(traceback.format_exc())
 
@@ -3167,7 +3166,13 @@ class lora_tag_helper(TkinterDnD.Tk):
             json_file = p / "defaults.json"
             if isfile(json_file):
                 with open(json_file) as f:
+                    features = {}
+                    if "features" in defaults:
+                        features.update(defaults["features"])
                     defaults.update(json.load(f))
+                    if "features" in defaults:
+                        features.update(defaults["features"])
+                    defaults["features"] = features
         return defaults
     
     def get_item_from_file(self, path):
@@ -3221,8 +3226,11 @@ class lora_tag_helper(TkinterDnD.Tk):
     #Add UI elements for save JSON button
     def save_json(self, event = None):
         file = self.image_files[self.file_index]
+        item = self.get_item_from_ui()
+        defaults = self.get_defaults()
+        trimmed_item = {item[x] for x in item if x in defaults and item[x] != defaults[x]}
         self.write_item_to_file(
-            self.get_item_from_ui(),
+            trimmed_item,
             splitext(file)[0] + ".json")
         self.update_known_feature_checklists()
 
