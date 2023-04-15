@@ -3255,6 +3255,9 @@ class lora_tag_helper(TkinterDnD.Tk):
         else:
             item["automatic_tags"] = interrogate_automatic_tags(path)
 
+        if "automatic_tags" not in item or not item["automatic_tags"]:
+            item["automatic_tags"] = ""
+
         self.write_item_to_file(item, json_file)
 
     #Update automatic tags in all JSON files
@@ -3408,7 +3411,6 @@ class lora_tag_helper(TkinterDnD.Tk):
     def save_unsaved_popup(self):
         if(len(self.image_files) == 0):
            return
-        
         json_file = "".join(splitext(self.image_files[self.file_index])[:-1]) + ".json"
         if(self.get_item_from_ui() != self.get_item_from_file(json_file)):
             answer = askyesno(parent=self,
