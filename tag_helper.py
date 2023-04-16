@@ -3167,14 +3167,17 @@ class lora_tag_helper(TkinterDnD.Tk):
         for p in paths:
             json_file = p / "defaults.json"
             if isfile(json_file):
-                with open(json_file) as f:
-                    features = {}
-                    if "features" in defaults:
-                        features.update(defaults["features"])
-                    defaults.update(json.load(f))
-                    if "features" in defaults:
-                        features.update(defaults["features"])
-                    defaults["features"] = features
+                try:
+                    with open(json_file) as f:
+                        features = {}
+                        if "features" in defaults:
+                            features.update(defaults["features"])
+                        defaults.update(json.load(f))
+                        if "features" in defaults:
+                            features.update(defaults["features"])
+                        defaults["features"] = features
+                except:
+                    pass
         return defaults
     
     def get_item_from_file(self, path):
@@ -3258,7 +3261,10 @@ class lora_tag_helper(TkinterDnD.Tk):
         if "automatic_tags" not in item or not item["automatic_tags"]:
             item["automatic_tags"] = ""
 
-        self.write_item_to_file(item, json_file)
+        defaults = self.get_defaults(json_file)
+        trimmed_item = {x:item[x] for x in item if x in defaults and item[x] != defaults[x]}
+
+        self.write_item_to_file(trimmed_item, json_file)
 
     #Update automatic tags in all JSON files
     def update_all_automatic_tags(self, event = None):
@@ -3363,6 +3369,11 @@ class lora_tag_helper(TkinterDnD.Tk):
        
         features_to_add = {f for f in features if f in words and f not in active_features}
 
+        for i in range(self.feature_count):
+            if self.features[i][0]["var"].get() in features_to_add:
+                features_to_add.remove(self.features[i][0]["var"].get())
+
+
         self.disable_feature_tracing()
         i = self.feature_count - 1
         try:
@@ -3417,7 +3428,10 @@ class lora_tag_helper(TkinterDnD.Tk):
                               title='Save unsaved data?',
                             message='You have unsaved changes. Save JSON now?')
             if answer:
-                self.write_item_to_file(self.get_item_from_ui(), json_file)
+                defaults = self.get_defaults()
+                item = self.get_item_from_ui()
+                trimmed_item = {x:item[x] for x in item if x in defaults and item[x] != defaults[x]}
+                self.write_item_to_file(trimmed_item, json_file)
                 self.update_known_feature_checklists()
 
     def select_all(self, event):
