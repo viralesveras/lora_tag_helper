@@ -130,5 +130,6 @@ dmypy.json
 
 
 #Project-specific
-dataset
-lora_subsets
+dataset/*
+lora_subsets/*
+

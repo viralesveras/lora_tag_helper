@@ -1,4 +1,4 @@
-from os import listdir, makedirs, walk, getcwd, utime, remove
+from os import listdir, makedirs, walk, getcwd, utime, remove, sep
 from os.path import isfile, join, splitext, exists, getmtime, relpath
 import time
 import threading
@@ -1308,7 +1308,7 @@ class generate_lora_subset_popup(object):
 
         #Checkbox for fetching automatic tags if empty
         self.interrogate_automatic_tags = tk.BooleanVar(None)
-        self.interrogate_automatic_tags.set(False)
+        self.interrogate_automatic_tags.set(True)
         interrogate_automatic_tags_chk = tk.Checkbutton(
             settings_group,
             var=self.interrogate_automatic_tags,
@@ -1597,7 +1597,7 @@ class generate_lora_subset_popup(object):
             if(tgt_name != item["title"] and item["title"]):
                 tgt_image = str(pathlib.Path(tgt_parent) / item["title"]) + tgt_ext
 
-            tgt_image = tgt_image.replace("/", "_")
+            tgt_image = tgt_image.replace(sep, "_")
             i = 2
             while exists(tgt_image):
                 tgt_image = splitext(tgt_image)[0] + f"_{i}" + tgt_ext
@@ -1673,7 +1673,7 @@ class generate_lora_subset_popup(object):
                 if not found:
                     unique_components.append(c.strip())
 
-            caption = ", ".join(reversed(unique_components))
+            unique_caption = ", ".join(reversed(unique_components))
 
             if self.enable_filtering.get():
                 filtered_components_or = re.split(",| OR ", self.filter.get())
@@ -1689,8 +1689,11 @@ class generate_lora_subset_popup(object):
                             c_and = c_and[4:]
                             invert = not invert
 
+                        start_index = 1 if c_and in self.lora_name.get() and self.include_lora_name.get() else 0
+                        filter_caption = ",".join(caption.split(",")[start_index:])
+
                         #Handle the NOT operator
-                        cur_match_and = c_and.strip().lower() in caption.lower()
+                        cur_match_and = c_and.strip().lower() in filter_caption.lower()
                         if invert:
                             cur_match_and = not cur_match_and
                         match_and &= cur_match_and
@@ -1701,6 +1704,8 @@ class generate_lora_subset_popup(object):
                 #If this item doesn't match the filter, skip it.
                 if not match:
                     continue
+
+            caption = unique_caption
 
             if self.filter_rating.get() and item["rating"] < self.minimum_rating.get():
                 continue
@@ -2525,7 +2530,6 @@ class lora_tag_helper(TkinterDnD.Tk):
                 for p in self.known_feature_checklists:
                     if p in parents:
                         self.known_feature_checklists[p] = [x for x in self.known_feature_checklists[p] if not x[0].startswith(iid)]
-                pprint(self.known_feature_checklists)
                           
         except:
             print(traceback.format_exc())
@@ -2777,6 +2781,12 @@ class lora_tag_helper(TkinterDnD.Tk):
 
     #Create open dataset action
     def open_dataset(self, event = None, directory = None):
+        if len(self.image_files) > 0:
+            answer = askyesno(title='confirmation',
+                    message='Are you sure that you want to close this datast?')
+            if not answer:
+                return
+            
         self.known_features = {}
         self.clear_ui()
         self.show_initial_frame()
