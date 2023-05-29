@@ -1628,6 +1628,7 @@ class generate_lora_subset_popup(object):
             current_image_index += 1
 
             #Load associated JSON and/or TXT as normal
+            self.parent.prompt = ""
             item = self.parent.get_item_from_file(path)
 
             #Get unique flat name for file
@@ -1780,6 +1781,7 @@ class generate_lora_subset_popup(object):
             if isfile(json_file):
                 shutil.copy2(json_file, target_json)
             else:
+                self.parent.prompt = ""
                 self.parent.write_item_to_file(
                     self.parent.get_item_from_file(path),
                     target_json
