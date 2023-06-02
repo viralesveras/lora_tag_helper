@@ -361,7 +361,7 @@ def do_interrogate(
 use_interrogate = True
 interrogator_ready = False
 def interrogate_automatic_tags(image_file):
-    use_ci = True
+    use_ci = False
     if use_ci:
         try:
             image = Image.open(image_file).convert('RGB')
@@ -1842,6 +1842,7 @@ class paste_settings(object):
         self.set_summary = False
         self.set_rating = False
         self.set_autotags = False
+        self.set_cropping = False
 
 class paste_settings_popup(object):
     def __init__(self, parent):
@@ -1850,10 +1851,12 @@ class paste_settings_popup(object):
         self.stay_on_top_and_follow()
 
     def create_ui(self):
+        self.height = 320
+
         self.top = tk.Toplevel(self.parent)
         self.top.overrideredirect(1)
-        self.top.minsize(200, 280)
-        self.top.maxsize(200, 280)
+        self.top.minsize(200, self.height)
+        self.top.maxsize(200, self.height)
         self.set_position()
         self.top.title("Set data to get pasted...")
         self.top.wait_visibility()
@@ -1940,6 +1943,15 @@ class paste_settings_popup(object):
             text=f"Set auto tags:")
         set_rating_chk.grid(row=5, column=0, padx=5, pady=5, sticky="w")
 
+
+        self.set_cropping = tk.BooleanVar(None)
+        self.set_cropping.set(self.parent.paste_set.set_cropping)
+        set_cropping_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_cropping,
+            text=f"Set crop:")
+        set_cropping_chk.grid(row=6, column=0, padx=5, pady=5, sticky="w")
+
         # Cancel button
         cancel_btn = tk.Button(self.form_frame, text='Cancel', 
                                command=self.cancel)
@@ -1968,7 +1980,7 @@ class paste_settings_popup(object):
     def set_position(self):
 
         abs_coord_x = self.parent.paste_settings_btn.winfo_rootx() - 178
-        abs_coord_y = self.parent.paste_settings_btn.winfo_rooty() - 290
+        abs_coord_y = self.parent.paste_settings_btn.winfo_rooty() - (self.height + 10)
         self.top.geometry('%dx%d+%d+%d' % (self.top.winfo_width(), self.top.winfo_height(), abs_coord_x, abs_coord_y))
 
     def accept(self, event = None):
@@ -1978,6 +1990,7 @@ class paste_settings_popup(object):
         self.parent.paste_set.set_summary = self.set_summary.get()
         self.parent.paste_set.set_rating = self.set_rating.get()
         self.parent.paste_set.set_autotags = self.set_autotags.get()
+        self.parent.paste_set.set_cropping = self.set_cropping.get()
         self.close()
 
     def cancel(self, event = None):
@@ -2504,7 +2517,7 @@ class title_feature_extractor(object):
                 split_titles = list(filter(None, extraction.target_titles.get().split("\n")))
                 for title in split_titles:
                     if title in self.main_editor.get_item_from_ui()["title"]:
-                        print("apply extraction " + extraction.target_tag.get())
+                        print(extraction.target_tag.get() + " added to " + basename(file))
                         self.apply_extraction(extraction.target_tag.get(),1)
 
 
@@ -2858,6 +2871,11 @@ class dataset_viewer(object):
         self.controls_box = tk.LabelFrame(self.form_frame, borderwidth=2,relief='sunken',text="controls")
         self.controls_box.grid(row=0,column=0, padx=(5, 5), pady=5, sticky="nsew")
 
+        #self.search_text = tk.StringVar(None)
+        #self.search_text.set("🔍")
+        #self.search_bar = tk.Entry(self.controls_box,textvariable=self.search_text, justify="left")
+        #self.search_bar.grid(row=0, column=0, padx=(0, 5), pady=5, sticky="ew")
+
         self.directory_frame = DynamicGrid(self.form_frame, width=500, height=200)
         self.directory_frame.grid(row=1, column=0, padx= 2, pady=2, sticky="nsew")
 
@@ -2870,6 +2888,7 @@ class dataset_viewer(object):
         for file in self.parent.image_files:
             self.add_ui_entry(file)
 
+
     def add_ui_entry(self,file = None):
         box = self.directory_frame.add_box()
         ui_entry = dv_file_entry(box,self,file)
@@ -2881,6 +2900,7 @@ class dataset_viewer(object):
         self.ui_entries.remove(ui_entry)
         ui_entry.delete_entry()
     def entry_right_clicked(self,entry):
+        self.parent.save_unsaved_popup()
         file_index = self.parent.image_files.index(entry.file)
         self.parent.file_index = file_index
         self.parent.set_ui(file_index)
@@ -2928,8 +2948,7 @@ class dataset_viewer(object):
         for i in range(from_index, to_index):
             self.select_entry(self.ui_entries[i])
 
-    
-    def apply_feature_to_sets(self,iid,remove):
+    def apply_feature_to_selection(self,iid,remove):
         selected_entry = self.parent.file_index
         for entry in self.selected_entries:
             self.apply_feature(iid,remove,entry)
@@ -2944,6 +2963,8 @@ class dataset_viewer(object):
         self.parent.set_ui(file_index,None,True)
         self.parent.feature_clicked(iid,remove)
         self.parent.save_json()
+        print(iid + " {action} ".format(action="added to" if remove else "removed from")
+               + basename(entry.file))
 
     def on_close(self):
         self.top.destroy()
@@ -3705,7 +3726,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                     self.feature_extractor_window.add_entry(iid)
                 elif self.shift_pressed and not self.dataset_viewer_window == None:
                     toggle = tv.get_component_state(iid)
-                    self.dataset_viewer_window.apply_feature_to_sets(iid,toggle)
+                    self.dataset_viewer_window.apply_feature_to_selection(iid,toggle)
                 elif self.alt_pressed:
                     
                     print(f"Bulk Modify {iid}")
@@ -3953,6 +3974,16 @@ class lora_tag_helper(TkinterDnD.Tk):
 
             except:
                 print(traceback.format_exc())
+        if(self.paste_set.set_cropping):
+            try:
+                self.l_pct = self.stored_item["crop"][0]
+                self.t_pct = self.stored_item["crop"][1]
+                self.r_pct = self.stored_item["crop"][2]
+                self.b_pct = self.stored_item["crop"][3]
+                self.generate_crop_rectangle()
+            except:
+                print(traceback.format_exc())
+
 
         if(self.paste_set.set_features):
             features_modified = False
@@ -4160,7 +4191,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                     
 
     def build_known_feature_checklists(self, full = False):
-        print("build feature checklist")
+        #print("build feature checklist")
         self.known_feature_checklists = {}
         known_checklist_full = []
         for path in self.known_features:
@@ -4471,7 +4502,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         return [c]
 
     def build_checklist_from_features(self):
-        print("build checklist from features")
+        #print("build checklist from features")
         path = relpath(pathlib.Path(self.image_files[self.file_index]).absolute().parent, self.path)
         parents = [str(p).strip() for p in pathlib.Path(path).parents]
         parents.insert(0, str(path).strip())
