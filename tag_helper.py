@@ -1,5 +1,5 @@
-from os import listdir, makedirs, walk, getcwd, utime, remove, sep
-from os.path import isfile, join, splitext, exists, getmtime, relpath
+from os import listdir, makedirs, walk, getcwd, utime, remove, sep, scandir
+from os.path import isfile, join, splitext, exists, getmtime, relpath, dirname, basename
 import time
 import threading
 import shutil
@@ -8,22 +8,26 @@ import re
 import traceback
 from PIL import ImageTk, Image
 import json
+#from jsondiff import diff
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from tkinter.messagebox import askyesno, showinfo, showwarning, showerror
+from tkinter import simpledialog, scrolledtext
 import tkinter.filedialog
 import tkinter.ttk
 import tkinter.font
 import tkinter as tk
 import tkinter as tk
 from tkinter import ttk
-
 import pynput
 from pprint import pprint
 
 import spacy
 
 import tagger
+
+from clip_interrogator import Config, Interrogator
+
 
 treeview_separator = "\u2192"
 
@@ -55,6 +59,7 @@ class TtkCheckList(ttk.Treeview):
         if "show" not in kwargs:
             kwargs["show"] = "tree"
         ttk.Treeview.__init__(self, master, **kwargs)
+        
         self._separator = separator
         self._unchecked = unchecked
         self._checked = checked
@@ -62,6 +67,8 @@ class TtkCheckList(ttk.Treeview):
         self.parent_frame = master
         self.column('#0', width=width, stretch=tk.YES)
         self.bind("<Button-1>", self._item_click, True)
+        self.bind('<<TreeviewOpen>>', self.handle_open_event)
+        self.bind('<<TreeviewClose>>', self.handle_close_event)
 
     def _item_click(self, event):
         assert event.widget == self
@@ -93,9 +100,43 @@ class TtkCheckList(ttk.Treeview):
             return False
 
         if(not in_tree(item)):
-            self.insert(parent_iid, index='end', iid=item,
+            
+            new_item = self.insert(parent_iid, index='end', iid=item,
                         text=self._unchecked+" "+text, open=True)
+            if new_item in self.parent_frame.master.master.master.treeview_unfold_state:
+                self.item(new_item, open= self.parent_frame.master.master.master.treeview_unfold_state[new_item])
+            
+    def handle_open_event(self,event):
+        
+        item = self.focus()
+        self.parent_frame.master.master.master.treeview_unfold_state[item] = True
+        if(self.parent_frame.master.master.master.alt_pressed):
+            self.fold_all_items(True)
+        print("open pre" + str(item))
 
+    def handle_close_event(self,event):
+        
+        item = self.focus()
+        self.parent_frame.master.master.master.treeview_unfold_state[item] = False
+        if(self.parent_frame.master.master.master.alt_pressed):
+            self.fold_all_items(False)
+        print("open pre" + str(item))
+
+    def fold_all_items(self, fold):
+        for item in self.get_children():
+            child_count = 0
+            for child in self.get_children(item):
+                grandchild_count = 0
+                if(child_count == 0):
+                    self.item(item, open= fold)
+                    self.parent_frame.master.master.master.treeview_unfold_state[item] = False
+                child_count += 1
+                for grandchild in self.get_children(child):
+                    if(grandchild_count == 0):
+                        self.item(child, open= fold)
+                        self.parent_frame.master.master.master.treeview_unfold_state[child] = False
+                    grandchild_count += 1      
+        
     def autofit(self):
         minwidth = 200
         font = tk.font.nametofont("TkTextFont")
@@ -118,6 +159,14 @@ class TtkCheckList(ttk.Treeview):
         else:
             self.check(iid)
 
+    def get_component_state(self,iid):
+        toggle = 0
+        text = self.item(iid, "text")
+        if text[0] == self._checked:
+            toggle = 0
+        else:
+            toggle = 1
+        return toggle
 
     def checked(self, iid):
         """
@@ -163,7 +212,7 @@ def get_automatic_tags_from_txt_file(image_file):
         pass
     return None
 
-use_clip = False
+use_clip = True
 tokenizer_ready = False
 def import_tokenizer_reqs():
     global tokenizer_ready
@@ -311,9 +360,20 @@ def do_interrogate(
     
 use_interrogate = True
 interrogator_ready = False
-
 def interrogate_automatic_tags(image_file):
-    if use_interrogate:
+    use_ci = False
+    if use_ci:
+        try:
+            image = Image.open(image_file).convert('RGB')
+            set_device = "cuda"#"mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
+            print("device: " + set_device)
+            ci = Interrogator(Config(clip_model_name="ViT-L-14/openai", blip_model_type= "base"))
+            
+            return ci.interrogate(image)
+        except:
+            print(traceback.format_exc())            
+            return get_automatic_tags_from_txt_file(image_file)
+    elif use_interrogate:
         try:
             image = Image.open(image_file).convert('RGB')
             
@@ -381,7 +441,7 @@ class save_defaults_popup(object):
 
         #Labeled group for options
         settings_group = tk.LabelFrame(self.form_frame, 
-                                    text="Settings")
+                                    text="Copy & Paste Settings")
         settings_group.grid(row=2, column=0, 
                             columnspan=3, 
                             padx=5, pady=5,
@@ -1052,8 +1112,6 @@ class manually_review_subset_popup(object):
         self.top.grab_release()
         self.top.destroy()
 
-
-
 class NumericEntry(tk.Entry):
     def __init__(self, master=None, **kwargs):
         self.var = tk.StringVar()
@@ -1069,7 +1127,6 @@ class NumericEntry(tk.Entry):
         else:
             # there's non-digit characters in the input; reject this 
             self.set(self.old_value)
-
 
 class generate_lora_subset_popup(object):
     def __init__(self, parent):
@@ -1776,7 +1833,1188 @@ class generate_lora_subset_popup(object):
             self.close()
         except:
             print(traceback.format_exc())
+
+class paste_settings(object):
+    def __init__(self):
+        self.set_artist = False
+        self.set_style = False
+        self.set_features = True
+        self.set_summary = False
+        self.set_rating = False
+        self.set_autotags = False
+        self.set_cropping = False
+
+class paste_settings_popup(object):
+    def __init__(self, parent):
+        self.parent = parent
+        self.create_ui()
+        self.stay_on_top_and_follow()
+
+    def create_ui(self):
+        self.height = 320
+
+        self.top = tk.Toplevel(self.parent)
+        self.top.overrideredirect(1)
+        self.top.minsize(200, self.height)
+        self.top.maxsize(200, self.height)
+        self.set_position()
+        self.top.title("Set data to get pasted...")
+        self.top.wait_visibility()
+        self.top.grab_set()
+        self.top.rowconfigure(0, weight=1)
+        self.top.columnconfigure(0, weight=1)
+        self.top.resizable(False,False)
+        self.top.transient(self.parent)
+        #abs_coord_x = self.parent.winfo_pointerx() - self.parent.winfo_rootx()
+        #abs_coord_y = self.parent.winfo_pointery() - self.parent.winfo_rooty()
+
+
+
+        self.form_frame = tk.Frame(self.top, 
+                                   borderwidth=4,
+                                   relief='raised',)
         
+        self.form_frame.columnconfigure(1, weight=1)
+        self.form_frame.rowconfigure(5, weight=1)
+
+        #Labeled group for options
+        settings_group = tk.LabelFrame(self.form_frame, 
+                                    text="Settings")
+        settings_group.grid(row=2, column=0, 
+                            columnspan=3, 
+                            padx=5, pady=5,
+                            sticky="nsew")
+
+        settings_group.columnconfigure(1, weight=1)
+
+        #Checkbox for inclusion of artist
+        self.set_artist = tk.BooleanVar(None)
+        self.set_artist.set(self.parent.paste_set.set_artist)
+        set_artist_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_artist,
+            text=f"Set artist:")
+        set_artist_chk.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+
+        #Checkbox for inclusion of style
+        self.set_style = tk.BooleanVar(None)
+        self.set_style.set(self.parent.paste_set.set_style)
+        set_style_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_style,
+            text=f"Set style:")
+        set_style_chk.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+
+
+        #Checkbox for inclusion of features
+        self.set_features = tk.BooleanVar(None)
+        self.set_features.set(self.parent.paste_set.set_features)
+        set_features_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_features,
+            text=f"Set features:")
+        set_features_chk.grid(row=2, column=0, padx=5, pady=5, sticky="w")
+
+
+        self.set_summary = tk.BooleanVar(None)
+        self.set_summary.set(self.parent.paste_set.set_summary)
+        include_feature_descriptions_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_summary,
+            text=f"Set Summary")
+        include_feature_descriptions_chk.grid(row=3, column=0, padx=5, pady=5, sticky="w")
+
+
+        #Labeled group for rating
+        self.set_rating = tk.BooleanVar(None)
+        self.set_rating.set(self.parent.paste_set.set_rating)
+        set_rating_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_rating,
+            text=f"Set quality:")
+        set_rating_chk.grid(row=4, column=0, padx=5, pady=5, sticky="w")
+        #Labeled group for rating
+
+        self.set_autotags = tk.BooleanVar(None)
+        self.set_autotags.set(self.parent.paste_set.set_autotags)
+        set_rating_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_autotags,
+            text=f"Set auto tags:")
+        set_rating_chk.grid(row=5, column=0, padx=5, pady=5, sticky="w")
+
+
+        self.set_cropping = tk.BooleanVar(None)
+        self.set_cropping.set(self.parent.paste_set.set_cropping)
+        set_cropping_chk = tk.Checkbutton(
+            settings_group,
+            var=self.set_cropping,
+            text=f"Set crop:")
+        set_cropping_chk.grid(row=6, column=0, padx=5, pady=5, sticky="w")
+
+        # Cancel button
+        cancel_btn = tk.Button(self.form_frame, text='Cancel', 
+                               command=self.cancel)
+        cancel_btn.grid(row=6, column=0, padx=4, pady=4, sticky="sew")
+        self.top.bind("<Escape>", self.cancel)
+
+
+        # Save button
+        save_btn = tk.Button(self.form_frame, text='Accept', 
+                               command=self.accept)
+        save_btn.grid(row=6, column=1,
+                          columnspan=2,
+                          padx=4, pady=4, 
+                          sticky="sew")
+
+        self.form_frame.grid(row=0, column=0, 
+                        padx=0, pady=0, 
+                        sticky="nsew")
+        
+
+    def stay_on_top_and_follow(self):
+        self.top.lift()
+        self.top.after(1, self.stay_on_top_and_follow)
+        self.set_position()
+    
+    def set_position(self):
+
+        abs_coord_x = self.parent.paste_settings_btn.winfo_rootx() - 178
+        abs_coord_y = self.parent.paste_settings_btn.winfo_rooty() - (self.height + 10)
+        self.top.geometry('%dx%d+%d+%d' % (self.top.winfo_width(), self.top.winfo_height(), abs_coord_x, abs_coord_y))
+
+    def accept(self, event = None):
+        self.parent.paste_set.set_artist = self.set_artist.get()
+        self.parent.paste_set.set_style = self.set_style.get()
+        self.parent.paste_set.set_features = self.set_features.get()
+        self.parent.paste_set.set_summary = self.set_summary.get()
+        self.parent.paste_set.set_rating = self.set_rating.get()
+        self.parent.paste_set.set_autotags = self.set_autotags.get()
+        self.parent.paste_set.set_cropping = self.set_cropping.get()
+        self.close()
+
+    def cancel(self, event = None):
+        self.close()
+        return "break"
+
+    def close(self):
+        self.top.grab_release()
+        self.top.destroy()
+        return "break"
+
+
+class rename_feature_popup(object):
+    def __init__(self, parent, iid):
+        self.parent = parent
+
+        self.create_ui(iid)
+
+    def create_ui(self,iid):
+
+        feature_branch = iid.split(treeview_separator)
+        feature_branch.reverse()
+        self.target_branch = feature_branch
+        self.top = tk.Toplevel(self.parent)
+        self.top.title("Rename feature across dataset")
+        self.top.wait_visibility()
+        self.top.grab_set()
+        self.top.rowconfigure(0, weight=1)
+        self.top.columnconfigure(0, weight=1)
+        self.top.minsize(300, 100)
+        self.top.transient(self.parent)
+
+        self.form_frame = tk.Frame(self.top, 
+                                   borderwidth=2,
+                                   relief='raised',)
+        
+        self.form_frame.columnconfigure(2, weight=1)
+        self.form_frame.rowconfigure(5, weight=1)
+
+        
+        from_label = tk.Label(self.form_frame, text="From: ")
+        from_label.grid(row=0, column=0, padx=(5, 0), pady=5, sticky="e")
+        old_text_label = tk.Label(self.form_frame, text=feature_branch[0])
+        old_text_label.grid(row=0, column=1, padx=(0, 0), pady=5, sticky="w")
+        to_label = tk.Label(self.form_frame, text="To: ")
+        to_label.grid(row=1, column=0, padx=(5, 0), pady=5, sticky="e")
+
+
+        self.changed_text = tk.StringVar(None)
+        self.changed_text.set(feature_branch[0])
+
+        new_text_entry = tk.Entry(self.form_frame,
+                                     textvariable=self.changed_text, 
+                                     justify="left")
+        new_text_entry.grid(row=1, column=1, 
+                               padx=(2, 5), pady=5, 
+                               sticky="ew")
+        new_text_entry.bind('<Control-a>', self.select_all)
+
+
+        # Cancel button
+        cancel_btn = tk.Button(self.form_frame, text='Cancel', 
+                               command=self.cancel)
+        cancel_btn.grid(row=6, column=0, padx=4, pady=4, sticky="sew")
+        self.top.bind("<Escape>", self.cancel)
+
+        # Save button
+        save_btn = tk.Button(self.form_frame, text='Rename Entry', 
+                               command=self.rename_feature)
+        save_btn.grid(row=6, column=1,
+                          columnspan=1,
+                          padx=4, pady=4, 
+                          sticky="sew")
+        # Delete button
+        delete_btn = tk.Button(self.form_frame, text='Delete Entry', 
+                               command=self.remove_feature)
+        delete_btn.grid(row=6, column=2,
+                          columnspan=1,
+                          padx=4, pady=4, 
+                          sticky="sew")
+        self.form_frame.grid(row=0, column=0, 
+                        padx=0, pady=0, 
+                        sticky="nsew")
+
+    def select_all(self, event):
+        # select text
+        try:
+            event.widget.select_range(0, 'end')
+        except:
+            print(traceback.format_exc())
+            event.widget.tag_add("sel", "1.0", "end")
+
+        # move cursor to the end
+        try:
+            event.widget.icursor('end')
+        except:
+            print(traceback.format_exc())
+            event.widget.mark_set("insert", "end")
+
+        #stop propagation
+        return 'break'
+        
+    def rename_feature(self):
+        self.parent.modify_feature_across_dataset(self.target_branch, self.changed_text.get(), False)
+        self.close()
+        
+    def remove_feature(self):
+        answer = askyesno(title='confirmation',
+        message='Are you sure that you want to delete "' + self.target_branch[0] + '" ?')
+        if not answer:
+            return
+        self.parent.modify_feature_across_dataset(self.target_branch, self.changed_text.get(), True)
+        self.close()
+
+    def cancel(self, event = None):
+        self.close()
+        return "break"
+
+    def close(self):
+        self.top.grab_release()
+        self.top.destroy()
+        return "break"
+
+
+class automatic_tags_editor(object):
+    def __init__(self, main_editor):
+        self.correction_presets_path = "./appdata/atc_presets"
+        self.correction_presets =  ["default"]
+        self.selected_preset = "None"
+        self.correction_entries = []
+        self.main_editor = main_editor
+        self.load_correction_presets()
+
+    def load_correction_presets(self):
+        files = list(pathlib.Path(dirname(__file__) + self.correction_presets_path).rglob("*"))
+        self.correction_presets = [
+            f for f in files if splitext(f)[1] == ".json"]
+        if (len(self.correction_presets) == 0):
+            self.correction_presets =  ["default"]
+
+    def apply_corrections(self, file):
+
+        item = self.main_editor.get_item_from_file(file)
+        auto_tags = item["automatic_tags"].split(", ")
+        altered = False
+        to_ui = False
+        for correction in self.correction_entries:
+            if(correction.condition.get() == "" or correction.condition.get() in auto_tags):
+                replace = correction.replacement_text.get()
+                for i in range(0,len(auto_tags)):
+                    if(correction.target_tag.get() == auto_tags[i]):
+                        auto_tags[i] = auto_tags[i].replace(correction.target_tag.get(), replace)
+                        altered = True
+                        #print(correction.target_tag.get() + " replaced in " + basename(file))
+        if(altered):
+            item["automatic_tags"] = ", ".join([x for x in auto_tags if x])
+            self.main_editor.write_item_to_file(
+            item,
+            splitext(file)[0] + ".json")
+            print("Modified " + basename(file))
+            if(self.main_editor.file_index == self.main_editor.image_files.index(file)):
+                to_ui = True
+        if(to_ui):
+                self.main_editor.automatic_tags_textbox.delete("1.0", "end")
+                self.main_editor.automatic_tags_textbox.insert("end",", ".join([x for x in auto_tags if x]))
+
+
+    def apply_corrections_to_set(self):
+
+        for file in self.main_editor.image_files:
+            self.apply_corrections(file)
+            
+
+class tag_replacement_entry(object):
+    def __init__(self, target_tag,replacement_text,condition = ""):
+        self.target_tag = tk.StringVar(None,target_tag)
+        self.replacement_text = tk.StringVar(None,replacement_text)
+        self.condition = tk.StringVar(None,condition)
+
+
+class automatic_tags_editor_window(object):
+    def __init__(self, parent, auto_tags_editor):
+        self.parent = parent
+        self.auto_tags_editor = auto_tags_editor
+        self.create_ui()
+    
+    def create_ui(self):
+
+        self.ui_entries = []
+        self.entries_startRow = 1
+        self.top = tk.Toplevel(self.parent)
+        self.top.title("Automated Tags Editor")
+        self.top.wm_minsize(418, 500)
+        self.top.wm_maxsize(418,800)
+        self.top.wm_resizable(False,True)
+        self.top.transient(self.parent)
+        self.top.wm_protocol("WM_DELETE_WINDOW", self.on_close)
+        self.form_frame = tk.Frame(self.top, 
+                                   borderwidth=2,
+                                   relief='flat',)   
+        self.form_frame.rowconfigure(1, weight=1)
+
+
+        self.controls_box = tk.Frame(self.form_frame, 
+                                   borderwidth=2,
+                                   relief='flat',)
+        self.controls_box.grid(row=0,column=0, padx=(5, 5), pady=5, sticky="nsew")
+        self.controls_box.columnconfigure(tuple(range(10)), weight=0)
+        self.controls_box.columnconfigure(tuple(range(3)), weight=1)
+
+
+        self.selected_preset_name = tk.StringVar(self.controls_box)
+        self.selected_preset_name.set(splitext(basename(self.auto_tags_editor.selected_preset))[0]) # default value
+        self.selected_preset_name.trace_add('write',self.preset_changed_callback)
+        self.preset_dropdown = tk.OptionMenu(self.controls_box, self.selected_preset_name, *self.auto_tags_editor.correction_presets, command = self.preset_changed_callback)
+        self.preset_dropdown.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
+        self.load_presets_options()
+
+
+        new_preset_btn = tk.Button(self.controls_box, text='New Preset', 
+                               command=self.create_preset)
+        
+        new_preset_btn.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
+        save_btn = tk.Button(self.controls_box, text='Save', 
+                               command=self.save_preset)
+        
+        save_btn.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
+
+
+        self.add_entry_btn = tk.Button(self.controls_box, text='Add Entry', 
+                               command=self.add_entry)
+        self.add_entry_btn.grid(row=1, column=1, padx=4, pady=4, sticky="nsew")
+
+        self.entries_box = tk.Frame(self.form_frame, 
+                                   borderwidth=2,
+                                   relief='sunken',)
+        self.entries_box.grid(row=1, column=0, padx=(5, 5), pady=5, sticky="nsew")
+
+
+        self.controls_box_bottom = tk.Frame(self.form_frame, 
+                                   borderwidth=2,
+                                   relief='flat',)
+        self.controls_box_bottom.grid(row=2, column=0, padx=(5, 5), pady=5, sticky="nsew")
+
+
+        apply_btn = tk.Button(self.controls_box_bottom, text='Apply', 
+                               command=self.apply_corrections)
+        apply_btn.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
+        apply_btn = tk.Button(self.controls_box_bottom, text='Apply to dataset', 
+                               command=self.apply_corrections_to_set)
+        apply_btn.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
+
+        self.scroll_frame = ScrollableFrame(self.entries_box)
+
+        for entry in self.auto_tags_editor.correction_entries:
+            self.add_ui_entry(entry)
+
+        self.scroll_frame.pack(expand=True, fill="both")
+        self.form_frame.pack(expand=True, fill="both")
+
+    def apply_corrections(self):
+        self.auto_tags_editor.apply_corrections(self.parent.image_files[self.parent.file_index])
+    def apply_corrections_to_set(self):
+        self.auto_tags_editor.apply_corrections_to_set()
+    def add_entry(self,tag = "tag", replacement = "", condition = ""):
+        entry = tag_replacement_entry(tag,replacement,condition)
+        self.auto_tags_editor.correction_entries.append(entry)
+        self.add_ui_entry(entry)
+
+    def add_ui_entry(self, entry):
+        ui_entry = tag_replacement_ui_entry(entry,self.scroll_frame.scrollable_frame,self,self.entries_startRow + len(self.ui_entries))
+        self.ui_entries.append(ui_entry)
+
+
+    def remove_entry(self, ui_entry, order = True):
+        self.auto_tags_editor.correction_entries.remove(ui_entry.target_entry)
+        self.ui_entries.remove(ui_entry)
+        ui_entry.delete_entry()
+        if(order):
+            self.order_entries()
+
+    def clear_entries(self):
+        for i in range(0, len(self.ui_entries)):
+            self.ui_entries[i].delete_entry()
+        self.auto_tags_editor.correction_entries.clear()
+        self.ui_entries.clear()
+
+    def order_entries(self):
+        count = 0
+        for entry in self.ui_entries:
+            entry.set_row_index(self.entries_startRow + self.ui_entries.index(entry))
+
+
+
+    def load_presets_options(self):
+        self.preset_dropdown['menu'].delete(0, 'end')
+
+        for opt in self.auto_tags_editor.correction_presets: 
+            self.preset_dropdown['menu'].add_command(label=splitext(basename(opt))[0], command=tk._setit(self.selected_preset_name,splitext(basename(opt))[0]))
+
+    def preset_changed_callback(self,*args):
+        for preset_file in self.auto_tags_editor.correction_presets:
+            if(splitext(basename(preset_file))[0] == self.selected_preset_name.get()):
+                self.auto_tags_editor.selected_preset = preset_file
+                self.load_preset(preset_file)
+        
+    def load_preset(self, preset_file):
+        self.clear_entries()
+        try:
+            with open(preset_file) as f:
+                json_item = json.load(f)
+                for t in range(0,len(json_item["target_tags"])):
+                    self.add_entry(json_item["target_tags"][t], json_item["replacements"][t], json_item["conditions"][t] if "conditions" in json_item else None)
+        except FileNotFoundError:
+            pass
+
+    def create_preset(self):
+
+        answer = simpledialog.askstring("Input", "Type preset name.",
+                                parent=self.top)
+        if answer is not None and len(answer) > 2:
+            self.clear_entries()
+            self.auto_tags_editor.selected_preset = "./appdata/atc_presets/" + answer + ".json"
+            self.auto_tags_editor.correction_presets.append(self.auto_tags_editor.selected_preset)
+            self.selected_preset_name.set(splitext(basename(self.auto_tags_editor.selected_preset))[0])
+        else:
+            print("Preset name needs at least 3 characters")
+
+        self.load_presets_options()
+
+        
+    def save_preset(self):
+        try:
+            with open(self.auto_tags_editor.selected_preset, "w+") as f:
+
+                tags = []
+                replacements = []
+                conditions = []
+                for entry in self.auto_tags_editor.correction_entries:
+                    tags.append(entry.target_tag.get())
+                    replacements.append(entry.replacement_text.get())
+                    conditions.append(entry.condition.get())
+                dictionary = {
+                    "target_tags": tags,
+                    "replacements": replacements,
+                    "conditions": conditions,
+                }
+                f.write(json.dumps(dictionary, indent=4,))
+        except:
+            showerror(parent=self.parent,
+                      title="Couldn't save JSON",
+                      message="Could not save JSON file")
+            print(traceback.format_exc())
+
+    def select_all(self, event):
+        # select text
+        try:
+            event.widget.select_range(0, 'end')
+        except:
+            print(traceback.format_exc())
+            event.widget.tag_add("sel", "1.0", "end")
+
+        # move cursor to the end
+        try:
+            event.widget.icursor('end')
+        except:
+            print(traceback.format_exc())
+            event.widget.mark_set("insert", "end")
+
+        #stop propagation
+        return 'break'
+        
+
+    def cancel(self, event = None):
+        self.close()
+        return "break"
+
+    def close(self):
+        self.on_close()
+        #self.top.grab_release()
+        self.top.destroy()
+        return "break"
+    def on_close(self):
+        self.top.destroy()
+        self.auto_tags_editor.main_editor.auto_tags_window = None
+
+
+class tag_replacement_ui_entry(object):
+    def __init__(self, entry,parent,parent_class,row):
+        self.target_entry = entry
+        self.parent_class = parent_class
+        self.parent = parent
+        self.row_index = row
+        self.condition_visible = True
+        self.create_ui()
+
+    def create_ui(self):
+
+        self.entry_frame = tk.Frame(self.parent, 
+                                   borderwidth=2,
+                                   relief='raised',)
+        
+        self.entry_frame.grid(row=self.row_index, column=0,padx=(1, 1), pady=2, sticky="nsew")
+
+
+        self.count_label = tk.Label(self.entry_frame,text= "#" + str(self.row_index), width=4, font=('Calibri 10'))
+        self.count_label.grid(row=0, column=0, 
+                               padx=(1, 1), pady=2, 
+                               sticky="nsew")
+        self.target_tag_input = tk.Entry(self.entry_frame,
+                                     textvariable= self.target_entry.target_tag, 
+                                     justify="left")
+        self.target_tag_input.grid(row=0, column=1, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew")
+        
+        self.arrow = tk.Button(self.entry_frame, text= "←", 
+                               command=self.toggle_condition, width=3, font=('Calibri 10'),relief = "raised")             
+        self.arrow.grid(row=0, column=2, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew")
+
+        self.replace_with_input = tk.Entry(self.entry_frame,
+                                     textvariable= self.target_entry.replacement_text, 
+                                     justify="left")
+        self.replace_with_input.grid(row=0, column=3, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew")
+        self.remove_btn = tk.Button(self.entry_frame, text= "🗑", 
+                               command=self.delete_btn_callback, width=3, font=('Calibri 10'))
+        self.remove_btn.grid(row=0, column=4, padx=4, pady=2, sticky="nsew")
+
+        self.condition_text = tk.Label(self.entry_frame,
+                                     text= "Condition:", 
+                                     justify="left")
+        self.condition_text.grid(row=1, column=1, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew")
+
+        self.condition_input = tk.Entry(self.entry_frame,
+                                     textvariable= self.target_entry.condition, 
+                                     justify="left")
+        self.condition_input.grid(row=1, column=3, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew") 
+        
+        if(self.target_entry.condition.get() == ""):
+            self.condition_input.grid_forget()
+            self.condition_text.grid_forget()
+            self.arrow.configure(relief = "groove") 
+            self.condition_visible = False
+
+    def set_row_index(self, row):
+        self.row_index = row
+        self.entry_frame.grid(row=self.row_index)
+        self.count_label.config(text= "#" + str(self.row_index))
+    def delete_btn_callback(self):
+        self.parent_class.remove_entry(self)
+    def delete_entry(self):
+        self.entry_frame.destroy()
+    def toggle_condition(self):
+        self.condition_visible = not self.condition_visible
+        if(self.condition_visible):
+            self.condition_input.grid(row=1, column=3, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew")   
+            self.condition_text.grid(row=1, column=1, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew") 
+            self.arrow.configure(relief = "raised")
+        else:
+            self.condition_input.grid_forget()
+            self.condition_text.grid_forget()
+            self.arrow.configure(relief = "groove") 
+
+
+class title_feature_extractor(object):
+    def __init__(self, main_editor):
+        self.extraction_presets_path = "./appdata/tfe_presets"
+        self.extraction_presets =  ["default"]
+        self.selected_preset = "None"
+        self.extraction_entries = []
+        self.main_editor = main_editor
+        self.load_extraction_presets()
+    def load_extraction_presets(self):
+
+        files = list(pathlib.Path(dirname(__file__) + self.extraction_presets_path).rglob("*"))
+        self.extraction_presets = [
+            f for f in files if splitext(f)[1] == ".json"]
+        if (len(self.extraction_presets) == 0):
+            self.extraction_presets =  ["default"]
+
+    def apply_extractions_to_set(self):
+
+        selected_entry = self.main_editor.file_index
+        for file in self.main_editor.image_files:
+
+            file_index = self.main_editor.image_files.index(file)
+            self.main_editor.file_index = file_index
+            self.main_editor.set_ui(file_index,None,True)
+            self.apply_extraction(file)
+
+
+                        
+    def apply_extraction(self,file,set_ui = False):
+        for extraction in self.extraction_entries:
+            split_titles = list(filter(None, extraction.target_titles.get().split("\n")))
+            for title in split_titles:
+                if title in self.main_editor.get_item_from_ui()["title"]:
+                    self.main_editor.feature_clicked(extraction.target_tag.get(),1)
+                    self.main_editor.save_json()
+                    print(extraction.target_tag.get() + " added to " + basename(file))
+        if(set_ui):
+            print("set ui")
+            self.main_editor.build_checklist_from_features()
+
+
+
+
+class title_feature_entry(object):
+    def __init__(self, target_tag,target_titles = ""):
+        self.target_tag = tk.StringVar(None,target_tag)
+        self.target_titles = tk.StringVar(None,target_titles)
+
+
+class title_feature_extractor_window(object):
+    def __init__(self, parent, feature_extractor):
+        self.parent = parent
+        self.feature_extractor = feature_extractor
+        self.create_ui()
+    
+    def create_ui(self):
+
+        self.ui_entries = []
+        self.entries_startRow = 1
+        self.top = tk.Toplevel(self.parent)
+        self.top.title("Title Feature Extraction")
+        self.top.wm_minsize(420, 500)
+        self.top.wm_maxsize(420,800)
+        self.top.wm_resizable(True,True)
+        self.top.transient(self.parent)
+        self.top.wm_protocol("WM_DELETE_WINDOW", self.on_close)
+        self.form_frame = tk.Frame(self.top, 
+                                   borderwidth=2,
+                                   relief='flat',)   
+        self.form_frame.rowconfigure(1, weight=1)
+
+
+        self.controls_box = tk.Frame(self.form_frame, 
+                                   borderwidth=2,
+                                   relief='flat',)
+        self.controls_box.grid(row=0,column=0, padx=(5, 5), pady=5, sticky="nsew")
+        self.controls_box.columnconfigure(tuple(range(5)), weight=0)
+        self.controls_box.columnconfigure(tuple(range(3)), weight=1)
+
+
+        self.selected_preset_name = tk.StringVar(self.controls_box)
+        self.selected_preset_name.set(splitext(basename(self.feature_extractor.selected_preset))[0]) # default value
+        self.selected_preset_name.trace_add('write',self.preset_changed_callback)
+        self.preset_dropdown = tk.OptionMenu(self.controls_box, self.selected_preset_name, *self.feature_extractor.extraction_presets, command = self.preset_changed_callback)
+        self.preset_dropdown.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
+        self.load_presets_options()
+
+
+        new_preset_btn = tk.Button(self.controls_box, text='New Preset', 
+                               command=self.create_preset)
+        
+        new_preset_btn.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
+        save_btn = tk.Button(self.controls_box, text='Save', 
+                               command=self.save_preset)
+        
+        save_btn.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
+
+
+        self.entries_box = tk.Frame(self.form_frame, 
+                                   borderwidth=2,
+                                   relief='sunken',)
+        self.entries_box.grid(row=1, column=0, padx=(5, 5), pady=5, sticky="nsew")
+
+
+        self.controls_box_bottom = tk.Frame(self.form_frame, 
+                                   borderwidth=2,
+                                   relief='flat',)
+        self.controls_box_bottom.grid(row=2, column=0, padx=(5, 5), pady=5, sticky="nsew")
+
+
+        apply_btn = tk.Button(self.controls_box_bottom, text='Apply', 
+                               command=self.apply_extraction)
+        apply_btn.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
+        apply_btn = tk.Button(self.controls_box_bottom, text='Apply to dataset', 
+                               command=self.apply_extractions_to_set)
+        apply_btn.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
+
+        self.scroll_frame = ScrollableFrame(self.entries_box)
+
+        for entry in self.feature_extractor.extraction_entries:
+            self.add_ui_entry(entry)
+
+        self.scroll_frame.pack(expand=True, fill="both")
+        self.form_frame.pack(expand=True, fill="both")
+
+    def apply_extraction(self):
+        self.feature_extractor.apply_extraction(self.parent.image_files[self.parent.file_index],True)
+    def apply_extractions_to_set(self):
+        self.feature_extractor.apply_extractions_to_set()
+    def add_entry(self,feature,titles = ""):
+        entry = title_feature_entry(feature,titles)
+        self.feature_extractor.extraction_entries.append(entry)
+        self.add_ui_entry(entry)
+
+    def add_ui_entry(self, entry):
+        ui_entry = title_feature_ui_entry(entry,self.scroll_frame.scrollable_frame,self,self.entries_startRow + len(self.ui_entries))
+        self.ui_entries.append(ui_entry)
+
+
+    def remove_entry(self, ui_entry, order = True):
+        self.feature_extractor.extraction_entries.remove(ui_entry.target_entry)
+        self.ui_entries.remove(ui_entry)
+        ui_entry.delete_entry()
+
+
+        if(order):
+            self.order_entries()
+
+    def clear_entries(self):
+        for i in range(0, len(self.ui_entries)):
+            self.ui_entries[i].delete_entry()
+        self.feature_extractor.extraction_entries.clear()
+        self.ui_entries.clear()
+
+    def order_entries(self):
+        count = 0
+        for entry in self.ui_entries:
+            entry.set_row_index(self.entries_startRow + self.ui_entries.index(entry))
+            count += 1
+
+
+    def load_presets_options(self):
+        self.preset_dropdown['menu'].delete(0, 'end')
+
+        for opt in self.feature_extractor.extraction_presets: 
+            self.preset_dropdown['menu'].add_command(label=splitext(basename(opt))[0], command=tk._setit(self.selected_preset_name,splitext(basename(opt))[0]))
+
+    def preset_changed_callback(self,*args):
+        for preset_file in self.feature_extractor.extraction_presets:
+            if(splitext(basename(preset_file))[0] == self.selected_preset_name.get()):
+                self.feature_extractor.selected_preset = preset_file
+                self.load_preset(preset_file)
+        
+    def load_preset(self, preset_file):
+        self.clear_entries()
+        #If available, parse JSON into fields
+        try:
+            with open(preset_file) as f:
+                json_item = json.load(f)
+                for t in range(0,len(json_item["features"])):
+
+                    self.add_entry(json_item["features"][t], "\n".join(json_item["titles"][t]))
+        except FileNotFoundError:
+            pass
+
+    def create_preset(self):
+
+        answer = simpledialog.askstring("Input", "Type preset name.",
+                                parent=self.top)
+        if answer is not None and len(answer) > 2:
+            self.clear_entries()
+            self.feature_extractor.selected_preset = "./appdata/tfe_presets/" + answer + ".json"
+            self.feature_extractor.extraction_presets.append(self.feature_extractor.selected_preset)
+            self.selected_preset_name.set(splitext(basename(self.feature_extractor.selected_preset))[0])
+        else:
+            print("Preset name needs at least 3 characters")
+
+        self.load_presets_options()
+
+        
+    def save_preset(self):
+        try:
+            with open(self.feature_extractor.selected_preset, "w+") as f:
+
+                tags = []
+                titles = []
+                for entry in self.feature_extractor.extraction_entries:
+                    #target_titles = entry.target_titles.get().split("\n")
+                    target_titles = [term for term in  entry.target_titles.get().split('\n') if '\n' not in term and not len(term) == 0]
+                    #target_titles = (x.replace("\n","") for x in entry.target_titles.get().split("\n"))
+                    print(str(target_titles))
+                    tags.append(entry.target_tag.get())
+                    titles.append(target_titles)
+                dictionary = {
+                    "features": tags,
+                    "titles": titles,
+                }
+                f.write(json.dumps(dictionary, indent=4,))
+        except:
+            showerror(parent=self.parent,
+                      title="Couldn't save JSON",
+                      message="Could not save JSON file")
+            print(traceback.format_exc())
+
+    def select_all(self, event):
+        # select text
+        try:
+            event.widget.select_range(0, 'end')
+        except:
+            print(traceback.format_exc())
+            event.widget.tag_add("sel", "1.0", "end")
+
+        # move cursor to the end
+        try:
+            event.widget.icursor('end')
+        except:
+            print(traceback.format_exc())
+            event.widget.mark_set("insert", "end")
+
+        #stop propagation
+        return 'break'
+        
+
+    def cancel(self, event = None):
+        self.close()
+        return "break"
+
+    def close(self):
+        self.on_close()
+        #self.top.grab_release()
+        self.top.destroy()
+        return "break"
+    def on_close(self):
+        self.top.destroy()
+        self.feature_extractor.main_editor.feature_extractor_window = None
+
+
+class title_feature_ui_entry(object):
+    def __init__(self, entry,parent,parent_class,row):
+        self.target_entry = entry
+        self.parent_class = parent_class
+        self.parent = parent
+        self.row_index = row
+        self.condition_visible = True
+        self.create_ui()
+
+    def create_ui(self):
+
+        self.entry_frame = tk.Frame(self.parent, 
+                                   borderwidth=2,
+                                   relief='raised',)
+        
+        self.entry_frame.grid(row=self.row_index, column=0,padx=(1, 1), pady=2, sticky="nsew")
+
+        self.count_label = tk.Label(self.entry_frame,text= "#" + str(self.row_index), width=4, font=('Calibri 10'))
+        self.count_label.grid(row=0, column=0, padx=(1, 1), pady=2, sticky="nsew")
+
+        self.entry_count = tk.IntVar(self.entry_frame,0,"entries")
+        self.entry_count_label = tk.Label(self.entry_frame,textvariable= self.entry_count, width=4, font=('Calibri 10'))
+        self.entry_count_label.grid(row=1, column=0, padx=(1, 1), pady=2, sticky="nsew")
+
+        self.target_tag = tk.Label(self.entry_frame,
+                                     textvariable= self.target_entry.target_tag, 
+                                     justify="left")
+        self.target_tag.grid(row=0, column=1, 
+                               padx=(4, 4), pady=2, 
+                               sticky="nsw")
+          
+        self.arrow = tk.Button(self.entry_frame, text= "←⎘", 
+                               command=self.get_title, width=3, font=('Calibri 10'),relief = "raised")             
+        self.arrow.grid(row=1, column=4, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew")
+        
+
+        self.text_area = scrolledtext.ScrolledText(self.entry_frame,wrap=tk.WORD,width=34, height=4)
+        self.text_area.grid(row=1, column=1, pady=10, padx=2,columnspan= 3)
+
+        self.text_area.insert(tk.INSERT,self.target_entry.target_titles.get())
+        self.text_area.bind('<<Modified>>', self.title_input_modified) 
+                      
+        self.remove_btn = tk.Button(self.entry_frame, text= "🗑", 
+                               command=self.delete_btn_callback, width=3, font=('Calibri 10'))
+        self.remove_btn.grid(row=0, column=4, padx=4, pady=2, sticky="nsew")
+
+    def title_input_modified(self, event): 
+
+        input_text = event.widget.get("1.0", "end")
+        event.widget.edit_modified(False)
+        self.target_entry.target_titles.set(input_text)
+        split_titles = list(filter(None, input_text.split("\n")))
+        titles_count = len(split_titles)
+        self.entry_count.set(titles_count)
+        
+
+
+    def set_row_index(self, row):
+        self.row_index = row
+        self.entry_frame.grid(row=self.row_index)
+        self.count_label.config(text= "#" + str(self.row_index))
+    def delete_btn_callback(self):
+        self.parent_class.remove_entry(self)
+    def delete_entry(self):
+        self.entry_frame.destroy()
+    def toggle_condition(self):
+        self.condition_visible = not self.condition_visible
+        if(self.condition_visible):
+            self.condition_input.grid(row=1, column=3, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew")   
+            self.condition_text.grid(row=1, column=1, 
+                               padx=(2, 2), pady=2, 
+                               sticky="nsew") 
+            self.arrow.configure(relief = "raised")
+        else:
+            self.condition_input.grid_forget()
+            self.condition_text.grid_forget()
+            self.arrow.configure(relief = "groove")  
+    def get_title(self):
+        grabbed_title = self.parent_class.feature_extractor.main_editor.title_var.get()
+        if(not self.text_area.get("1.0", "end") == "\n"):
+           grabbed_title = "\n" + grabbed_title
+        self.text_area.insert(tk.INSERT,grabbed_title)
+
+
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, container, *args, **kwargs):
+        super().__init__(container, *args, **kwargs)
+        canvas = tk.Canvas(self)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = ttk.Frame(canvas)
+        self.scrollable_frame.columnconfigure(0, weight=1)
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="y", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        #self.scrollable_frame.pack(side="top", fill="y")
+
+
+class dataset_viewer(object):
+    def __init__(self, parent):
+        self.parent = parent
+        self.create_ui()
+        self.selected_entries = []
+        self.last_selected_entry = None
+    def create_ui(self):
+        
+        self.ui_entries = []
+        self.entries_startRow = 1
+        self.top = tk.Toplevel(self.parent)
+        self.top.title("Dataset Viewer")
+        self.top.wm_minsize(800, 600)
+
+        self.top.wm_resizable(True,True)
+
+        self.top.wm_protocol("WM_DELETE_WINDOW", self.on_close)
+        self.form_frame = tk.Frame(self.top, 
+                                   borderwidth=2,
+                                   relief='flat',)   
+        self.form_frame.rowconfigure(1, weight=1)
+        self.form_frame.columnconfigure(0, weight=1)
+
+        self.controls_box = tk.LabelFrame(self.form_frame, borderwidth=2,relief='sunken',text="controls")
+        self.controls_box.grid(row=0,column=0, padx=(5, 5), pady=5, sticky="nsew")
+
+        #self.search_text = tk.StringVar(None)
+        #self.search_text.set("🔍")
+        #self.search_bar = tk.Entry(self.controls_box,textvariable=self.search_text, justify="left")
+        #self.search_bar.grid(row=0, column=0, padx=(0, 5), pady=5, sticky="ew")
+
+        self.directory_frame = DynamicGrid(self.form_frame, width=500, height=200)
+        self.directory_frame.grid(row=1, column=0, padx= 2, pady=2, sticky="nsew")
+
+        self.open_dataset()
+
+        self.form_frame.pack(expand=True, fill="both")
+
+
+    def open_dataset(self):
+        for file in self.parent.image_files:
+            self.add_ui_entry(file)
+
+
+    def add_ui_entry(self,file = None):
+        box = self.directory_frame.add_box()
+        ui_entry = dv_file_entry(box,self,file)
+        self.ui_entries.append(ui_entry)
+
+
+    def remove_entry(self, ui_entry, order = True):
+        self.feature_extractor.extraction_entries.remove(ui_entry.target_entry)
+        self.ui_entries.remove(ui_entry)
+        ui_entry.delete_entry()
+    def entry_right_clicked(self,entry):
+        self.parent.save_unsaved_popup()
+        file_index = self.parent.image_files.index(entry.file)
+        self.parent.file_index = file_index
+        self.parent.set_ui(file_index)
+    def entry_clicked(self,entry):
+        self.ctrl_pressed = False
+        self.alt_pressed = False
+        self.shift_pressed = False
+        
+        if(len(self.selected_entries) > 0):
+            if(self.parent.ctrl_pressed):              
+                if(entry.selected):
+                    self.deselect_entry(entry)
+                else:
+                    self.select_entry(entry)
+            elif(self.parent.shift_pressed and not self.last_selected_entry == None):
+                self.shift_select(entry)
+            else:
+                if(entry.selected):
+                    self.deselect_all_entries()
+                else:
+                    self.deselect_all_entries()
+                    self.select_entry(entry)
+        else:
+            self.select_entry(entry)
+
+    def select_entry(self,entry):
+        self.last_selected_entry = entry
+        self.selected_entries.append(entry)
+        entry.select()
+    def deselect_entry(self,entry):
+        self.selected_entries.remove(entry)
+        entry.deselect()
+    def deselect_all_entries(self):
+        for entry in self.selected_entries:
+            entry.deselect()
+        self.selected_entries.clear()
+    def shift_select(self,entry):
+        if(self.ui_entries.index(self.last_selected_entry) < self.ui_entries.index(entry)):
+            from_index = self.ui_entries.index(self.last_selected_entry)
+            to_index = self.ui_entries.index(entry) + 1
+        else:
+            from_index = self.ui_entries.index(entry)
+            to_index = self.ui_entries.index(self.last_selected_entry)
+
+        for i in range(from_index, to_index):
+            self.select_entry(self.ui_entries[i])
+
+    def apply_feature_to_selection(self,iid,remove):
+        selected_entry = self.parent.file_index
+        for entry in self.selected_entries:
+            self.apply_feature(iid,remove,entry)
+        self.parent.set_ui(selected_entry)
+        self.parent.file_index = selected_entry
+
+
+    def apply_feature(self,iid,remove,entry):
+
+        file_index = self.parent.image_files.index(entry.file)
+        self.parent.file_index = file_index
+        self.parent.set_ui(file_index,None,True)
+        self.parent.feature_clicked(iid,remove)
+        self.parent.save_json()
+        print(iid + " {action} ".format(action="added to" if remove else "removed from")
+               + basename(entry.file))
+
+    def on_close(self):
+        self.top.destroy()
+        self.parent.dataset_viewer_window = None
+          
+class dv_file_entry(object):
+    def __init__(self, container, dv, file):
+        self.dv = dv
+        self.parent = container
+        self.file = file
+        self.create_image_frame()
+        self.selected = False
+
+    def lm_buttonPressed( self, event ):
+        self.dv.entry_clicked(self)
+    def rm_button_pressed( self, event ):
+        self.dv.entry_right_clicked(self)
+    def select(self):
+        self.selected = True
+        self.canvas.configure(background="SlateGray3")
+    def deselect(self):
+        self.selected = False
+        self.canvas.configure(background= "Grey85")
+    def create_image_frame(self):
+
+        # Display image in image_frame
+        self.image = Image.open(self.file)
+        self.image.thumbnail((128,128), Image.LANCZOS)
+        self.framed_image = ImageTk.PhotoImage(self.image)
+
+        self.canvas = tk.Canvas(self.parent,bd= 2,background= "Grey85")
+        self.canvas.grid(row=0,column=0,sticky="nswe")
+        self.canvas.bind( "<Button-1>", self.lm_buttonPressed )
+        self.canvas.bind( "<Button-3>", self.rm_button_pressed )
+
+
+        self.canvas.create_image(64, 68, anchor="center",image=self.framed_image)
+        self.canvas.create_text(64, 134,  anchor= "n",text= splitext(basename(self.file))[0], width= 114,font=('Futura 10'))
+        
+
+class DynamicGrid(tk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent, *args, **kwargs)
+        self.text = tk.Text(self, wrap="char", borderwidth=0, highlightthickness=0,
+                            state="disabled",cursor= "arrow",background= "Grey70")
+        self.text.pack(fill="both", expand=True)
+        self.boxes = []
+
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.text.yview)
+        scrollbar.grid(row=1, column=1, padx=0, pady=0, sticky="nsw")
+        self.text.configure(yscrollcommand=scrollbar.set)
+
+
+
+    def add_box(self, color=None):
+        box = tk.Frame(self.text, bd=0, relief="raised",
+                       width=128, height=170) #padx=20, pady=20)
+        box.grid_propagate(False)
+        self.boxes.append(box)
+        self.text.configure(state="normal")
+        self.text.window_create("end", window=box)
+        self.text.configure(state="disabled")
+        return box
 
 # the given message with a bouncing progress bar will appear for as long as func is running, returns same as if func was run normally
 # a pb_length of None will result in the progress bar filling the window whose width is set by the length of msg
@@ -1859,9 +3097,6 @@ def run_func_with_loading_popup(parent, func, msg, window_title = None, bounce_s
         return func_return_l
 
 
-        
-
-
 #Application class
 class lora_tag_helper(TkinterDnD.Tk):
 
@@ -1879,7 +3114,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.already_initialized = False
         self.image_files = []
         self.file_index = 0
-        self.features = []
+        self.stored_item = []
         self.l_pct = 0
         self.t_pct = 0
         self.r_pct = 1
@@ -1888,10 +3123,19 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.features = []
         self.icon_image = Image.open("icon.png")
         self.ctrl_pressed = False
+        self.alt_pressed = False
+        self.shift_pressed = False
         self.prompt = ""
-
         self.feature_checklist = []
+        self.use_full_checklist = False
+        self.treeview_unfold_state = {}
         self.geometry("1200x600")
+        self.auto_tags_editor = automatic_tags_editor(self)
+        self.auto_tags_window = None
+        self.feature_extractor = title_feature_extractor(self)
+        self.feature_extractor_window = None
+        self.dataset_viewer_window = None
+        self.paste_set = paste_settings()
 
         self.create_ui()
         self.wm_protocol("WM_DELETE_WINDOW", self.quit)
@@ -1971,7 +3215,6 @@ class lora_tag_helper(TkinterDnD.Tk):
         menu_bar = tk.Menu(self)
         file_menu = tk.Menu(menu_bar, tearoff=0)
 
-
         file_menu.add_command(label="Open dataset...", 
                               command=self.open_dataset, 
                               underline=0, 
@@ -1996,7 +3239,6 @@ class lora_tag_helper(TkinterDnD.Tk):
                               accelerator="Ctrl+Shift+S")
         self.bind("<Control-S>", self.save_defaults)
 
-
         file_menu.add_command(label="Generate Lora subset...", 
                               command=self.generate_lora_subset, 
                               underline=10, 
@@ -2009,7 +3251,23 @@ class lora_tag_helper(TkinterDnD.Tk):
                               accelerator="Ctrl+Shift+T")
         self.bind("<Control-T>", self.update_all_automatic_tags)
 
+        file_menu.add_command(label="Automatic Tags Editor...", 
+                              command=self.open_auto_tags_editor, 
+                              underline=10, 
+                              accelerator="Ctrl+E")
+        self.bind("<Control-e>", self.open_auto_tags_editor)
 
+        file_menu.add_command(label="Title Feature Extraction...", 
+                              command=self.open_feature_extractor, 
+                              underline=10, 
+                              accelerator="Ctrl+W")
+        self.bind("<Control-w>", self.open_feature_extractor)
+
+        file_menu.add_command(label="Dataset Viewer...", 
+                              command=self.open_dataset_viewer, 
+                              underline=10, 
+                              accelerator="Ctrl+D")
+        self.bind("<Control-d>", self.open_dataset_viewer)
         file_menu.add_command(label="Exit", 
                               command=self.quit, 
                               underline=1, 
@@ -2060,6 +3318,7 @@ class lora_tag_helper(TkinterDnD.Tk):
         center_y = self.sizer_frame.winfo_height() / 2
 
         self.canvas.create_image(center_x, center_y, anchor="center",image=self.framed_image)
+
 
     def on_button_press(self,event):
         # save mouse drag start position
@@ -2314,7 +3573,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                              sticky="ew")
         self.summary_textbox.bind("<Tab>", self.focus_next_widget)
         self.summary_textbox.bind('<Control-a>', self.select_all)
-        self.summary_textbox.bind('<KeyRelease>', self.add_features_from_summary)
+        #self.summary_textbox.bind('<KeyRelease>', self.add_features_from_summary)
 
     #Add the features table to the form
     def add_features_table(self):
@@ -2371,15 +3630,25 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.title_entry.bind("<Control-t>", self.update_ui_automatic_tags)
         self.summary_textbox.bind("<Control-t>", self.update_ui_automatic_tags)
         self.automatic_tags_textbox.bind("<Control-t>", self.update_ui_automatic_tags)
+        self.automatic_tags_textbox.bind("<Control-m>", self.add_autotag_to_editor)
 
         save_json_btn = tk.Button(self.form_frame, 
                                   text="Save JSON (Ctrl+S)", 
                                   command=self.save_json)
-        save_json_btn.grid(row=13, column=0, 
-                           columnspan=2, 
+        save_json_btn.grid(row=13, column=1, 
                            padx=5, pady=5, 
                            sticky="ew")
         self.bind("<Control-s>", self.save_json)
+        self.autosave = tkinter.IntVar()
+        self.autosave_toggle_btn = tk.Checkbutton(self.form_frame, 
+                                  text="Autosave", 
+                                  variable= self.autosave,
+                                  command=self.autosave_toggle)
+        self.autosave_toggle_btn.grid(row=13, column=0, 
+                           padx=5, pady=5, 
+                           sticky="ew")
+
+        
 
 
     #Add the "Open a dataset" prompt button to the initial display
@@ -2413,25 +3682,49 @@ class lora_tag_helper(TkinterDnD.Tk):
 
 
     def on_press(self, key):
-        if key == pynput.keyboard.Key.ctrl:
+        if key == pynput.keyboard.Key.ctrl_l:
             self.ctrl_pressed = True
+        if key == pynput.keyboard.Key.alt_l:
+            self.alt_pressed = True
+        if key == pynput.keyboard.Key.shift_l:
+            self.shift_pressed = True
 
     def on_release(self, key):
-        if key == pynput.keyboard.Key.ctrl:
+        if key == pynput.keyboard.Key.ctrl_l:
             self.ctrl_pressed = False
+        if key == pynput.keyboard.Key.alt_l:
+            self.alt_pressed = False
+        if key == pynput.keyboard.Key.shift_l:
+            self.shift_pressed = False
+    
 
-    def feature_clicked(self, iid):        
+    def feature_clicked(self, iid, force_state = -1):        
         self.disable_feature_tracing()
         try:            
-            tv = self.feature_checklist_treeview                
-
+            tv = self.feature_checklist_treeview               
             deleting = False
-            if self.ctrl_pressed:
-                print(f"Delete {iid}")
-                deleting = True
+            if(force_state == -1):
+                if self.ctrl_pressed:
+                    print(f"Delete {iid}")
+                    deleting = True
+                    tv.uncheck(iid)
+                elif self.alt_pressed and self.shift_pressed:
+                    print(f"Add feature to title extractor {iid}")
+                    self.feature_extractor_window.add_entry(iid)
+                elif self.shift_pressed and not self.dataset_viewer_window == None:
+                    toggle = tv.get_component_state(iid)
+                    self.dataset_viewer_window.apply_feature_to_selection(iid,toggle)
+                elif self.alt_pressed:
+                    
+                    print(f"Bulk Modify {iid}")
+                    self.rename_feature(iid)
+                else:
+                    tv.toggle(iid)
+            elif(force_state == 0):
+                #deleting = True
                 tv.uncheck(iid)
-            else:
-                tv.toggle(iid)
+            elif(force_state == 1):
+                tv.check(iid)
 
 
             feature_iids = tv.get_children()
@@ -2532,6 +3825,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                 for p in self.known_feature_checklists:
                     if p in parents:
                         self.known_feature_checklists[p] = [x for x in self.known_feature_checklists[p] if not x[0].startswith(iid)]
+                self.known_checklist_full[p] = [x for x in self.known_checklist_full[p] if not x[0].startswith(iid)]
                           
         except:
             print(traceback.format_exc())
@@ -2540,23 +3834,39 @@ class lora_tag_helper(TkinterDnD.Tk):
 
 
     def add_feature_checklist(self):
+
         self.feature_checklist_group = tk.LabelFrame(self.form_frame, 
-                                    text="Features")
+                                    text="")
         self.feature_checklist_group.grid(row=0, column=2, 
                             rowspan=15, 
                             padx=5, pady=5,
                             sticky="nsew")
 
-        self.feature_checklist_group.rowconfigure(0, weight=1)
-        self.feature_checklist_group.columnconfigure(0, weight=1,minsize=200)
+        self.feature_checklist_group.rowconfigure(1, weight=1)
+        self.feature_checklist_group.columnconfigure(0, weight=1,minsize=220)
 
         bgcolor = self.feature_checklist_group["background"]
-        ttk.Style().configure("Treeview", borderwidth=0, relief=tk.FLAT, background=bgcolor, fieldbackground=bgcolor)
+
+
+        self.feature_checklist_controls_top = tk.Frame(self.feature_checklist_group,height= 10)
+        self.feature_checklist_controls_top.grid(row=0, column=0, 
+                            padx=0, pady=0,
+                            sticky="nsew")
+        self.feature_checklist_controls_top.rowconfigure(0, weight=1)
+        self.feature_checklist_controls_top.columnconfigure(0, weight=1)
+
+        self.checklist_mode_btn = tk.Button(self.feature_checklist_controls_top, text='Features: Directory',
+                                            height= 1, relief= "groove",
+                               command=self.switch_checklists)
+        self.checklist_mode_btn.grid(row=0, column=0, padx=4, pady=4, sticky="sew")
+
+
+        ttk.Style().configure("Treeview", borderwidth=0, relief=tk.FLAT, background=bgcolor, fieldbackground=bgcolor, font="Segoe_UI_Semibold 9")
         self.feature_checklist_treeview = TtkCheckList(self.feature_checklist_group,
                                                        height=self.feature_count, 
                                                        separator=treeview_separator,
                                                        clicked=self.feature_clicked)
-        self.feature_checklist_treeview.grid(row=0, column=0, padx=5, pady=5, sticky="news")
+        self.feature_checklist_treeview.grid(row=1, column=0, padx=5, pady=5, sticky="news")
         self.feature_checklist_treeview.rowconfigure(0, weight=1)
         self.feature_checklist_treeview.columnconfigure(0, weight=1)
         # Constructing vertical scrollbar
@@ -2564,12 +3874,135 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.verscrlbar = ttk.Scrollbar(self.feature_checklist_group,
                            orient ="vertical",
                            command = self.feature_checklist_treeview.yview)
-        self.verscrlbar.grid(row=0, column=1, sticky="nes")
+        self.verscrlbar.grid(row=1, column=1, sticky="nes")
         self.feature_checklist_treeview.configure(yscrollcommand = self.verscrlbar.set)
         self.update_checklist()
-        
 
-    #Add the save and navigation buttons to the right-hand form
+        self.feature_checklist_controls_bottom = tk.Frame(self.feature_checklist_group)
+        self.feature_checklist_controls_bottom.grid(row=2, column=0, 
+                            padx=2, pady=2,
+                            sticky="nsew")
+        self.feature_checklist_controls_bottom.columnconfigure(0, weight=1)
+        self.feature_checklist_controls_bottom.columnconfigure(1, weight=1)
+        self.feature_checklist_controls_bottom.columnconfigure(2, weight=0)
+        self.feature_checklist_controls_bottom.rowconfigure(0, weight=1)
+        self.feature_checklist_controls_bottom.rowconfigure(1, weight=0)
+
+        copy_feature_checklist_btn = tk.Button(self.feature_checklist_controls_bottom, text='Copy', 
+                               command=self.copy_item_data)
+        copy_feature_checklist_btn.grid(row=0, column=0, padx=4, pady=4, sticky="sew")
+        paste_feature_checklist_btn = tk.Button(self.feature_checklist_controls_bottom, text='Paste', 
+                               command=self.paste_item_data)
+        paste_feature_checklist_btn.grid(row=0, column=1, padx=4, pady=4, sticky="sew")
+
+        self.paste_settings_btn = tk.Button(self.feature_checklist_controls_bottom, text='⛭', 
+                               command=self.set_paste_settings)
+        self.paste_settings_btn.grid(row=0, column=2, padx=4, pady=4, sticky="sew")
+
+        self.clipboard_label = tk.Label(self.feature_checklist_controls_bottom, text="Clipboard: Empty")
+        self.clipboard_label.grid(row=1, column=0, padx=2, pady=0, sticky="sw",columnspan=3)
+
+    def copy_item_data(self):
+        self.stored_item = self.get_item_from_ui()
+        self.clipboard_label.configure(text= "Clipboard: " + self.stored_item["title"])
+
+    def paste_item_data(self):
+        if(self.shift_pressed and not self.dataset_viewer_window == None and len(self.dataset_viewer_window.selected_entries) > 0):
+            self.paste_item_to_selection()
+        else:
+            self.apply_paste_item_data()
+
+    def paste_item_to_selection(self):
+        selected_entry = self.file_index
+        for entry in self.dataset_viewer_window.selected_entries:
+            file_index = self.image_files.index(entry.file)
+            self.file_index = file_index
+            self.set_ui(file_index,None,True)
+            self.apply_paste_item_data()
+            self.save_json()
+        self.set_ui(selected_entry)
+        self.file_index = selected_entry
+
+    def apply_paste_item_data(self):
+
+        if(self.paste_set.set_artist):
+            try: 
+                self.artist_name.set(self.stored_item["artist"])
+            except: 
+                print(traceback.format_exc())
+
+        if(self.paste_set.set_style):
+            try: 
+                self.style.set(self.stored_item["style"])
+            except: 
+                print(traceback.format_exc())
+
+        if(self.paste_set.set_rating):
+            try:
+                self.rating.set(self.stored_item["rating"])
+            except:
+                print(traceback.format_exc())
+
+        if(self.paste_set.set_summary):
+            try:
+                self.summary_textbox.delete("1.0", "end")
+                self.summary_textbox.insert("1.0", self.stored_item["summary"])
+            except:
+                print(traceback.format_exc())
+
+        if(self.paste_set.set_autotags):
+            try:
+                if "automatic_tags" in self.stored_item:
+                    if self.stored_item["automatic_tags"]:
+                        self.automatic_tags_textbox.delete("1.0", "end")
+                        self.automatic_tags_textbox.insert("1.0", self.stored_item["automatic_tags"])
+
+            except:
+                print(traceback.format_exc())
+        if(self.paste_set.set_cropping):
+            try:
+                self.l_pct = self.stored_item["crop"][0]
+                self.t_pct = self.stored_item["crop"][1]
+                self.r_pct = self.stored_item["crop"][2]
+                self.b_pct = self.stored_item["crop"][3]
+                self.generate_crop_rectangle()
+            except:
+                print(traceback.format_exc())
+
+
+        if(self.paste_set.set_features):
+            features_modified = False
+            self.disable_feature_tracing()
+            try:
+                i = 0
+                features_modified = True
+                for k, v in  self.stored_item["features"].items():
+                    if(i >= self.feature_count):
+                        self.add_row()    
+                    self.disable_feature_tracing()            
+                    self.features[i][0]["var"].set(k)
+                    self.features[i][1]["var"].set(v)
+                    i += 1
+                
+            except:
+                print(traceback.format_exc())
+
+            if(features_modified):
+                if len(self.features) > 0:
+                    self.feature_modified(self.features[0][0]["var"])
+
+
+
+        print("Pasted Item")
+    def set_paste_settings(self,event = None):
+        if len(self.image_files) == 0:
+            showerror(parent=self, title="Error", message="Dataset must be open")
+            return
+        #Pop up dialog to save default settings for path
+        self.update()
+        self.wait_window(paste_settings_popup(self).top)
+        self.update()
+
     def update_checklist(self):
         for item in self.feature_checklist_treeview.get_children():
            self.feature_checklist_treeview.delete(item)        
@@ -2614,14 +4047,15 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.statusbar_text.set("")
 
     #Set the UI to the given item's values
-    def set_ui(self, index: int, item = None):
+    def set_ui(self, index: int, item = None, load_only_data = False):
         if len(self.image_files) == 0 or index > len(self.image_files):
             return
         
         self.clear_ui()
 
         f = self.image_files[index]
-        self.load_image(f)
+        if(not load_only_data):
+            self.load_image(f)
 
         if item is None:
             item = self.get_item_from_file(self.image_files[index])
@@ -2633,18 +4067,12 @@ class lora_tag_helper(TkinterDnD.Tk):
             print(traceback.format_exc())
 
         try: 
-            self.style.set(item["artist"])
+            self.style.set(item["style"])
         except: 
             print(traceback.format_exc())
 
         try:
             self.title_var.set(item["title"])
-        except:
-            print(traceback.format_exc())
-
-
-        try:
-            self.style.set(item["style"])
         except:
             print(traceback.format_exc())
 
@@ -2711,13 +4139,14 @@ class lora_tag_helper(TkinterDnD.Tk):
 
         self.update_idletasks()
         
-       
 
     #Gather known feature set
     def update_known_features(self, file, item):
+
         relative_path = pathlib.Path(relpath(pathlib.Path(file), self.path))
         parents = [str(p) for p in relative_path.parents]
         for p in parents:
+            #print("parent " + str(p))
             if p not in self.known_features:
                 self.known_features[p] = {}
 
@@ -2743,7 +4172,10 @@ class lora_tag_helper(TkinterDnD.Tk):
                     
 
     def build_known_feature_checklists(self):
+        #print("build feature checklist")
         self.known_feature_checklists = {}
+        self.known_feature_checklist_full = []
+        known_checklist_full = []
         for path in self.known_features:
             known_checklist = []
             p = str(path)
@@ -2762,6 +4194,8 @@ class lora_tag_helper(TkinterDnD.Tk):
 
                     if not found and new_item not in known_checklist:
                         known_checklist.append(new_item)
+                    if new_item not in known_checklist_full:
+                        known_checklist_full.append(new_item)
                     components = desc.split(",")
                     for c in components:
                         c = c.strip()
@@ -2774,12 +4208,31 @@ class lora_tag_helper(TkinterDnD.Tk):
                                         found = True
                                 if not found and new_item not in known_checklist:
                                     known_checklist.append(new_item)
+                                if new_item not in known_checklist_full:
+                                    known_checklist_full.append(new_item)
             known_checklist.sort()
             self.known_feature_checklists[path] = known_checklist
+        #Build full checklist
+        known_checklist_full.sort()
+        self.known_feature_checklist_full = known_checklist_full
+
 
         self.known_features = {}
 
+    def force_checklist_rebuild(self):
+        self.use_full_checklist = not self.use_full_checklist
 
+        for path in self.image_files:
+            item = self.get_item_from_file(path)
+            self.update_known_features(path, item)
+        self.disable_feature_tracing()
+        self.build_known_feature_checklists()
+        self.build_checklist_from_features()
+        self.enable_feature_tracing()     
+
+    def switch_checklists(self):
+        self.use_full_checklist = not self.use_full_checklist
+        self.build_checklist_from_features()
 
     #Create open dataset action
     def open_dataset(self, event = None, directory = None):
@@ -2828,7 +4281,7 @@ class lora_tag_helper(TkinterDnD.Tk):
 
         #Populate JSONs
         for path in self.image_files:
-            json_file = splitext(path)[0] + ".json"
+            #json_file = splitext(path)[0] + ".json"
             item = self.get_item_from_file(path)
             self.update_known_features(path, item)
             #self.write_item_to_file(item, json_file)
@@ -2855,6 +4308,26 @@ class lora_tag_helper(TkinterDnD.Tk):
             self.wait_window(generate_lora_subset_popup(self).top)
             self.update()
 
+
+    def open_auto_tags_editor(self, event = None):
+            if(self.auto_tags_window == None):
+                self.auto_tags_window = automatic_tags_editor_window(self,self.auto_tags_editor)
+            else:
+                self.auto_tags_window.close()
+
+
+    def open_feature_extractor(self, event = None):
+            if(self.feature_extractor_window == None):
+                self.feature_extractor_window = title_feature_extractor_window(self,self.feature_extractor)
+            else:
+                self.feature_extractor_window.close()
+
+    def open_dataset_viewer(self, event = None):
+            if(self.dataset_viewer_window == None):
+                self.dataset_viewer_window = dataset_viewer(self)
+            else:
+                self.dataset_viewer_window.on_close()
+  
     def load_image(self, f):
         try:
             self.image = Image.open(f)
@@ -3007,14 +4480,20 @@ class lora_tag_helper(TkinterDnD.Tk):
         return [c]
 
     def build_checklist_from_features(self):
+        #print("build checklist from features")
         path = relpath(pathlib.Path(self.image_files[self.file_index]).absolute().parent, self.path)
         parents = [str(p).strip() for p in pathlib.Path(path).parents]
         parents.insert(0, str(path).strip())
         self.feature_checklist = []
-        for p in parents:
-            for x in self.known_feature_checklists[str(p)]:
-                if x not in self.feature_checklist:
-                    self.feature_checklist.append(x)
+        if(self.use_full_checklist):
+            for x in self.known_feature_checklist_full:
+                    if x not in self.feature_checklist:
+                        self.feature_checklist.append(x)
+        else:
+            for p in parents:
+                for x in self.known_feature_checklists[str(p)]:
+                    if x not in self.feature_checklist:
+                        self.feature_checklist.append(x)
 
         for row in self.features:
             name = row[0]["var"].get().strip()
@@ -3029,7 +4508,11 @@ class lora_tag_helper(TkinterDnD.Tk):
                             self.feature_checklist.append(
                                 (name + treeview_separator + c_split, True))
         self.feature_checklist.sort()
-
+        if(self.use_full_checklist):
+            self.checklist_mode_btn.configure(text= "Features: All")
+        else:
+            current_dir = basename(self.image_files[self.file_index].absolute().parent) #relpath(pathlib.Path(self.image_files[self.file_index]).absolute().parent, self.path)
+            self.checklist_mode_btn.configure(text= "Features: " + str(current_dir))
         self.update_checklist()
 
     #Callback for when feature is modified
@@ -3059,6 +4542,7 @@ class lora_tag_helper(TkinterDnD.Tk):
 
         self.build_checklist_from_features()
         self.enable_feature_tracing()
+
 
 
     #Add entry to feature table
@@ -3096,6 +4580,7 @@ class lora_tag_helper(TkinterDnD.Tk):
 
 
     def get_item_from_ui(self):
+
         item = self.get_defaults()
         try: 
             item["artist"] = self.artist_name.get()
@@ -3111,7 +4596,6 @@ class lora_tag_helper(TkinterDnD.Tk):
             item["title"] = self.title_var.get()
         except:
             print(traceback.format_exc())
-
         try:
             item["rating"] = self.rating.get()
         except:
@@ -3237,7 +4721,11 @@ class lora_tag_helper(TkinterDnD.Tk):
         temp_checklist = self.feature_checklist
         for i in range(len(temp_checklist)):
             temp_checklist[i] = (temp_checklist[i][0], False)
-        self.known_feature_checklists[path] = temp_checklist
+        if(self.use_full_checklist):
+            self.known_feature_checklist_full = temp_checklist
+        else:
+            self.known_feature_checklists[path] = temp_checklist
+
         
 
     #Add UI elements for save JSON button
@@ -3251,6 +4739,9 @@ class lora_tag_helper(TkinterDnD.Tk):
             splitext(file)[0] + ".json")
         self.update_known_feature_checklists()
 
+    def autosave_toggle(self):
+       print("Autosave toggled " + str(self.autosave.get()))  
+         
     #Update automatic tags in JSON for image file
     def update_automatic_tags(self, path, popup=False):
         if not interrogator_ready:
@@ -3316,6 +4807,17 @@ class lora_tag_helper(TkinterDnD.Tk):
             self.update_automatic_tags(self.image_files[self.file_index])
             self.set_ui(self.file_index)
         return "break"
+
+    def add_autotag_to_editor(self, event = None):
+        selected_tag = self.automatic_tags_textbox.selection_get()
+        if(not self.auto_tags_window):
+            self.auto_tags_window = automatic_tags_editor_window(self,self.auto_tags_editor)     
+        if (len(selected_tag) > 0):
+            print("Add autotag " + selected_tag)
+            tags = selected_tag.split(", ")
+            for tag in tags:
+                if(not tag == "" and not tag == " "):
+                    self.auto_tags_window.add_entry(tag.replace(",",""))
 
 
     #Add UI elements for prev file button
@@ -3398,9 +4900,78 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.enable_feature_tracing()
         self.feature_modified(self.features[0][0]["var"])
 
-        
+    def rename_feature(self,iid, event = None):
+        if len(self.image_files) > 0:
+            self.save_unsaved_popup()
+            #Pop up dialog to rename features
+            self.update()
+            self.wait_window(rename_feature_popup(self,iid).top)
+            self.update()     
 
+    def modify_feature_across_dataset(self, feature_branch, changed_text, remove):
+        for file in self.image_files:
+            item = self.get_item_from_file(file)
+            item_changed = False
+            feature_to_change = ""
+            if "features" in item:
+                for feature in item["features"]:
+                    if feature == feature_branch[len(feature_branch) - 1]:
+                        if(len(feature_branch) > 1):
+                            components = item["features"][feature].split(",")
+                            component_to_remove = -1
+                            for c in range(0, len(components)):  
+                                comp = components[c].strip()
+                                c_split_list = self.split_component(comp)
+                                component_changed = False
+                                component_segment_to_remove = -1
+                                componentName = c_split_list[0] + treeview_separator
+                                for x in range(0, len(c_split_list)):
 
+                                    if(x >= 0):
+                                        sub_name_only = c_split_list[x].replace(componentName,'')
+                                        c_split_list[x] = sub_name_only
+                                    if(c_split_list[x] == feature_branch[0]):
+                                        c_split_list[x] = changed_text
+                                        component_segment_to_remove = x
+                                        component_changed = True
+
+                                if component_changed:
+                                    if(remove):
+                                        if(c_split_list[0] == feature_branch[0]):
+                                            component_to_remove = c
+                                        else:
+                                            del c_split_list[component_segment_to_remove]      
+                                    c_split_list = c_split_list[1:] + [c_split_list[0]]
+                                    components[c] = " ".join(c_split_list)
+                                    item_changed = True
+
+                            if item_changed:
+                                if(remove and component_to_remove > -1):
+                                    del components[component_to_remove]
+                                item["features"][feature] = ",".join(components)
+                        else:
+                            feature_to_change = feature
+                            item_changed = True
+            if feature_to_change == feature_branch[len(feature_branch) - 1]:
+                f_val = item["features"][feature_to_change]
+                del item["features"][feature_to_change]
+                if(not remove):
+                    item["features"][changed_text] = f_val            
+                            
+            if item_changed:
+                defaults = self.get_defaults()                
+                trimmed_item = {x:item[x] for x in item if x in defaults and item[x] != defaults[x]}
+                self.write_item_to_file(
+                    trimmed_item,
+                    splitext(file)[0] + ".json")
+                self.update_known_features(self.image_files[self.file_index], item)
+        # Update the UI        
+        self.disable_feature_tracing()
+        self.build_known_feature_checklists()
+        self.set_ui(self.file_index)
+        self.enable_feature_tracing()       
+
+                
 
     def reset(self, event = None):
         self.set_ui(self.file_index, self.get_defaults())
@@ -3435,16 +5006,20 @@ class lora_tag_helper(TkinterDnD.Tk):
         if(len(self.image_files) == 0):
            return
         json_file = "".join(splitext(self.image_files[self.file_index])[:-1]) + ".json"
-        if(self.get_item_from_ui() != self.get_item_from_file(json_file)):
-            answer = askyesno(parent=self,
-                              title='Save unsaved data?',
-                            message='You have unsaved changes. Save JSON now?')
-            if answer:
-                defaults = self.get_defaults()
-                item = self.get_item_from_ui()
-                trimmed_item = {x:item[x] for x in item if x in defaults and item[x] != defaults[x]}
-                self.write_item_to_file(trimmed_item, json_file)
-                self.update_known_feature_checklists()
+        answer = False
+        if not self.autosave.get():
+            #print("JSON differences: " + str(diff(self.get_item_from_ui(), self.get_item_from_file(json_file))))
+            if(self.get_item_from_ui() != self.get_item_from_file(json_file)):
+                answer = askyesno(parent=self,
+                                title='Save unsaved data?',
+                                message='You have unsaved changes. Save JSON now?')
+
+        if answer or self.autosave.get():
+            defaults = self.get_defaults()
+            item = self.get_item_from_ui()
+            trimmed_item = {x:item[x] for x in item if x in defaults and item[x] != defaults[x]}
+            self.write_item_to_file(trimmed_item, json_file)
+            self.update_known_feature_checklists()
 
     def select_all(self, event):
         # select text
@@ -3478,3 +5053,4 @@ if __name__ == "__main__":
     app = lora_tag_helper()
     #Let the user do their thing
     app.mainloop()
+
