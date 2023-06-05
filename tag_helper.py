@@ -2011,7 +2011,7 @@ class rename_feature_popup(object):
 
     def create_ui(self,iid):
 
-        feature_branch = iid.split("→")
+        feature_branch = iid.split(treeview_separator)
         feature_branch.reverse()
         self.target_branch = feature_branch
         self.top = tk.Toplevel(self.parent)
@@ -2131,43 +2131,37 @@ class automatic_tags_editor(object):
         if (len(self.correction_presets) == 0):
             self.correction_presets =  ["default"]
 
-    def apply_corrections(self):
-        auto_tags = self.main_editor.automatic_tags_textbox.get("1.0", "end")
+    def apply_corrections(self, file):
 
+        item = self.main_editor.get_item_from_file(file)
+        auto_tags = item["automatic_tags"].split(", ")
+        altered = False
+        to_ui = False
         for correction in self.correction_entries:
             if(correction.condition.get() == "" or correction.condition.get() in auto_tags):
                 replace = correction.replacement_text.get()
-                if(replace != ""):
-                    replace = replace + ", "
-                if(correction.target_tag.get() in auto_tags):
-                    auto_tags = auto_tags.replace(correction.target_tag.get() + ", ", replace)
-                    auto_tags = auto_tags.replace(correction.target_tag.get() + ",", replace)
-                    auto_tags = auto_tags.replace(correction.target_tag.get(), replace)
-        self.main_editor.automatic_tags_textbox.delete("1.0", "end")
-        self.main_editor.automatic_tags_textbox.insert("end",auto_tags)
+                for i in range(0,len(auto_tags)):
+                    if(correction.target_tag.get() == auto_tags[i]):
+                        auto_tags[i] = auto_tags[i].replace(correction.target_tag.get(), replace)
+                        altered = True
+                        #print(correction.target_tag.get() + " replaced in " + basename(file))
+        if(altered):
+            item["automatic_tags"] = ", ".join([x for x in auto_tags if x])
+            self.main_editor.write_item_to_file(
+            item,
+            splitext(file)[0] + ".json")
+            print("Modified " + basename(file))
+            if(self.main_editor.file_index == self.main_editor.image_files.index(file)):
+                to_ui = True
+        if(to_ui):
+                self.main_editor.automatic_tags_textbox.delete("1.0", "end")
+                self.main_editor.automatic_tags_textbox.insert("end",", ".join([x for x in auto_tags if x]))
+
 
     def apply_corrections_to_set(self):
 
         for file in self.main_editor.image_files:
-            item = self.main_editor.get_item_from_file(file)
-            auto_tags = item["automatic_tags"]
-            altered = False
-            for correction in self.correction_entries:
-                if(correction.condition.get() == "" or correction.condition.get() in auto_tags):
-                    replace = correction.replacement_text.get()
-                    if(replace != ""):
-                        replace = replace + ", "
-                    if(correction.target_tag.get() in auto_tags):
-                        auto_tags = auto_tags.replace(correction.target_tag.get() + ", ", replace)
-                        auto_tags = auto_tags.replace(correction.target_tag.get() + ",", replace)
-                        auto_tags = auto_tags.replace(correction.target_tag.get(), replace)
-                        altered = True
-            if(altered):
-                defaults = self.main_editor.get_defaults()
-                item["automatic_tags"] = auto_tags
-                trimmed_item = {x:item[x] for x in item if x in defaults and item[x] != defaults[x]}   
-                self.main_editor.write_item_to_file(trimmed_item, 
-                                        splitext(file)[0] + ".json")
+            self.apply_corrections(file)
             
 
 class tag_replacement_entry(object):
@@ -2258,7 +2252,7 @@ class automatic_tags_editor_window(object):
         self.form_frame.pack(expand=True, fill="both")
 
     def apply_corrections(self):
-        self.auto_tags_editor.apply_corrections()
+        self.auto_tags_editor.apply_corrections(self.parent.image_files[self.parent.file_index])
     def apply_corrections_to_set(self):
         self.auto_tags_editor.apply_corrections_to_set()
     def add_entry(self,tag = "tag", replacement = "", condition = ""):
@@ -2489,21 +2483,6 @@ class title_feature_extractor(object):
         if (len(self.extraction_presets) == 0):
             self.extraction_presets =  ["default"]
 
-    def apply_extractions(self):
-        auto_tags = self.main_editor.automatic_tags_textbox.get("1.0", "end")
-
-        for extraction in self.extraction_entries:
-            if(extraction.condition.get() == "" or extraction.condition.get() in auto_tags):
-                replace = extraction.target_titles.get()
-                if(replace != ""):
-                    replace = replace + ", "
-                if(extraction.target_tag.get() in auto_tags):
-                    auto_tags = auto_tags.replace(extraction.target_tag.get() + ", ", replace)
-                    auto_tags = auto_tags.replace(extraction.target_tag.get() + ",", replace)
-                    auto_tags = auto_tags.replace(extraction.target_tag.get(), replace)
-        self.main_editor.automatic_tags_textbox.delete("1.0", "end")
-        self.main_editor.automatic_tags_textbox.insert("end",auto_tags)
-
     def apply_extractions_to_set(self):
 
         selected_entry = self.main_editor.file_index
@@ -2512,19 +2491,23 @@ class title_feature_extractor(object):
             file_index = self.main_editor.image_files.index(file)
             self.main_editor.file_index = file_index
             self.main_editor.set_ui(file_index,None,True)
-
-            for extraction in self.extraction_entries:
-                split_titles = list(filter(None, extraction.target_titles.get().split("\n")))
-                for title in split_titles:
-                    if title in self.main_editor.get_item_from_ui()["title"]:
-                        print(extraction.target_tag.get() + " added to " + basename(file))
-                        self.apply_extraction(extraction.target_tag.get(),1)
+            self.apply_extraction(file)
 
 
-    def apply_extraction(self,iid,remove):
+                        
+    def apply_extraction(self,file,set_ui = False):
+        for extraction in self.extraction_entries:
+            split_titles = list(filter(None, extraction.target_titles.get().split("\n")))
+            for title in split_titles:
+                if title in self.main_editor.get_item_from_ui()["title"]:
+                    self.main_editor.feature_clicked(extraction.target_tag.get(),1)
+                    self.main_editor.save_json()
+                    print(extraction.target_tag.get() + " added to " + basename(file))
+        if(set_ui):
+            print("set ui")
+            self.main_editor.build_checklist_from_features()
 
-        self.main_editor.feature_clicked(iid,remove)
-        self.main_editor.save_json()
+
 
 
 class title_feature_entry(object):
@@ -2595,7 +2578,7 @@ class title_feature_extractor_window(object):
 
 
         apply_btn = tk.Button(self.controls_box_bottom, text='Apply', 
-                               command=self.apply_extractions)
+                               command=self.apply_extraction)
         apply_btn.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
         apply_btn = tk.Button(self.controls_box_bottom, text='Apply to dataset', 
                                command=self.apply_extractions_to_set)
@@ -2609,8 +2592,8 @@ class title_feature_extractor_window(object):
         self.scroll_frame.pack(expand=True, fill="both")
         self.form_frame.pack(expand=True, fill="both")
 
-    def apply_extractions(self):
-        self.feature_extractor.apply_extractions()
+    def apply_extraction(self):
+        self.feature_extractor.apply_extraction(self.parent.image_files[self.parent.file_index],True)
     def apply_extractions_to_set(self):
         self.feature_extractor.apply_extractions_to_set()
     def add_entry(self,feature,titles = ""):
@@ -2664,7 +2647,8 @@ class title_feature_extractor_window(object):
             with open(preset_file) as f:
                 json_item = json.load(f)
                 for t in range(0,len(json_item["features"])):
-                    self.add_entry(json_item["features"][t], json_item["titles"][t])
+
+                    self.add_entry(json_item["features"][t], "\n".join(json_item["titles"][t]))
         except FileNotFoundError:
             pass
 
@@ -2689,10 +2673,13 @@ class title_feature_extractor_window(object):
 
                 tags = []
                 titles = []
-                conditions = []
                 for entry in self.feature_extractor.extraction_entries:
+                    #target_titles = entry.target_titles.get().split("\n")
+                    target_titles = [term for term in  entry.target_titles.get().split('\n') if '\n' not in term and not len(term) == 0]
+                    #target_titles = (x.replace("\n","") for x in entry.target_titles.get().split("\n"))
+                    print(str(target_titles))
                     tags.append(entry.target_tag.get())
-                    titles.append(entry.target_titles.get())
+                    titles.append(target_titles)
                 dictionary = {
                     "features": tags,
                     "titles": titles,
@@ -2793,7 +2780,7 @@ class title_feature_ui_entry(object):
         split_titles = list(filter(None, input_text.split("\n")))
         titles_count = len(split_titles)
         self.entry_count.set(titles_count)
-        return "break"
+        
 
 
     def set_row_index(self, row):
@@ -3838,6 +3825,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                 for p in self.known_feature_checklists:
                     if p in parents:
                         self.known_feature_checklists[p] = [x for x in self.known_feature_checklists[p] if not x[0].startswith(iid)]
+                self.known_checklist_full[p] = [x for x in self.known_checklist_full[p] if not x[0].startswith(iid)]
                           
         except:
             print(traceback.format_exc())
@@ -3846,9 +3834,6 @@ class lora_tag_helper(TkinterDnD.Tk):
 
 
     def add_feature_checklist(self):
-
-
-
 
         self.feature_checklist_group = tk.LabelFrame(self.form_frame, 
                                     text="")
@@ -3872,7 +3857,7 @@ class lora_tag_helper(TkinterDnD.Tk):
 
         self.checklist_mode_btn = tk.Button(self.feature_checklist_controls_top, text='Features: Directory',
                                             height= 1, relief= "groove",
-                               command=self.force_checklist_rebuild)
+                               command=self.switch_checklists)
         self.checklist_mode_btn.grid(row=0, column=0, padx=4, pady=4, sticky="sew")
 
 
@@ -4006,9 +3991,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                 if len(self.features) > 0:
                     self.feature_modified(self.features[0][0]["var"])
 
-            #self.update_known_feature_checklists()
-            #self.build_checklist_from_features()
-            #self.enable_feature_tracing
+
 
         print("Pasted Item")
     def set_paste_settings(self,event = None):
@@ -4020,7 +4003,6 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.wait_window(paste_settings_popup(self).top)
         self.update()
 
-    #Add the save and navigation buttons to the right-hand form
     def update_checklist(self):
         for item in self.feature_checklist_treeview.get_children():
            self.feature_checklist_treeview.delete(item)        
@@ -4029,7 +4011,6 @@ class lora_tag_helper(TkinterDnD.Tk):
             if item[1]:
                 self.feature_checklist_treeview.check(item[0])
         self.feature_checklist_treeview.autofit()
-
 
     def disable_feature_tracing(self):    
         for i in range(len(self.features)):
@@ -4190,9 +4171,10 @@ class lora_tag_helper(TkinterDnD.Tk):
         self.known_features.update({p: combined_features})
                     
 
-    def build_known_feature_checklists(self, full = False):
+    def build_known_feature_checklists(self):
         #print("build feature checklist")
         self.known_feature_checklists = {}
+        self.known_feature_checklist_full = []
         known_checklist_full = []
         for path in self.known_features:
             known_checklist = []
@@ -4212,7 +4194,7 @@ class lora_tag_helper(TkinterDnD.Tk):
 
                     if not found and new_item not in known_checklist:
                         known_checklist.append(new_item)
-                    if not found and new_item not in known_checklist_full and full:
+                    if new_item not in known_checklist_full:
                         known_checklist_full.append(new_item)
                     components = desc.split(",")
                     for c in components:
@@ -4226,35 +4208,31 @@ class lora_tag_helper(TkinterDnD.Tk):
                                         found = True
                                 if not found and new_item not in known_checklist:
                                     known_checklist.append(new_item)
-                                if not found and new_item not in known_checklist_full and full:
+                                if new_item not in known_checklist_full:
                                     known_checklist_full.append(new_item)
             known_checklist.sort()
             self.known_feature_checklists[path] = known_checklist
-        if(full):
-            known_checklist_full.sort()
-            for path in self.known_features:
-                self.known_feature_checklists[path] = known_checklist_full
+        #Build full checklist
+        known_checklist_full.sort()
+        self.known_feature_checklist_full = known_checklist_full
 
 
         self.known_features = {}
 
     def force_checklist_rebuild(self):
         self.use_full_checklist = not self.use_full_checklist
-        #if(self.use_full_checklist):
-        #    self.checklist_mode_btn.configure(text= "Features: All")
-        #else:
-            #current_dir = relpath(pathlib.Path(self.image_files[self.file_index]).absolute(), self.path)
-            #self.checklist_mode_btn.configure(text= "Features: " + str(current_dir))
 
         for path in self.image_files:
             item = self.get_item_from_file(path)
             self.update_known_features(path, item)
-
         self.disable_feature_tracing()
-        self.build_known_feature_checklists(self.use_full_checklist)
+        self.build_known_feature_checklists()
         self.build_checklist_from_features()
-        #self.set_ui(self.file_index)
         self.enable_feature_tracing()     
+
+    def switch_checklists(self):
+        self.use_full_checklist = not self.use_full_checklist
+        self.build_checklist_from_features()
 
     #Create open dataset action
     def open_dataset(self, event = None, directory = None):
@@ -4307,7 +4285,7 @@ class lora_tag_helper(TkinterDnD.Tk):
             item = self.get_item_from_file(path)
             self.update_known_features(path, item)
             #self.write_item_to_file(item, json_file)
-        self.build_known_feature_checklists(self.use_full_checklist)
+        self.build_known_feature_checklists()
 
         #Point UI to beginning of queue
         if(len(self.image_files) > 0):
@@ -4507,10 +4485,15 @@ class lora_tag_helper(TkinterDnD.Tk):
         parents = [str(p).strip() for p in pathlib.Path(path).parents]
         parents.insert(0, str(path).strip())
         self.feature_checklist = []
-        for p in parents:
-            for x in self.known_feature_checklists[str(p)]:
-                if x not in self.feature_checklist:
-                    self.feature_checklist.append(x)
+        if(self.use_full_checklist):
+            for x in self.known_feature_checklist_full:
+                    if x not in self.feature_checklist:
+                        self.feature_checklist.append(x)
+        else:
+            for p in parents:
+                for x in self.known_feature_checklists[str(p)]:
+                    if x not in self.feature_checklist:
+                        self.feature_checklist.append(x)
 
         for row in self.features:
             name = row[0]["var"].get().strip()
@@ -4738,7 +4721,11 @@ class lora_tag_helper(TkinterDnD.Tk):
         temp_checklist = self.feature_checklist
         for i in range(len(temp_checklist)):
             temp_checklist[i] = (temp_checklist[i][0], False)
-        self.known_feature_checklists[path] = temp_checklist
+        if(self.use_full_checklist):
+            self.known_feature_checklist_full = temp_checklist
+        else:
+            self.known_feature_checklists[path] = temp_checklist
+
         
 
     #Add UI elements for save JSON button
@@ -4937,7 +4924,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                                 c_split_list = self.split_component(comp)
                                 component_changed = False
                                 component_segment_to_remove = -1
-                                componentName = c_split_list[0] + "→"
+                                componentName = c_split_list[0] + treeview_separator
                                 for x in range(0, len(c_split_list)):
 
                                     if(x >= 0):
@@ -4980,7 +4967,7 @@ class lora_tag_helper(TkinterDnD.Tk):
                 self.update_known_features(self.image_files[self.file_index], item)
         # Update the UI        
         self.disable_feature_tracing()
-        self.build_known_feature_checklists(self.use_full_checklist)
+        self.build_known_feature_checklists()
         self.set_ui(self.file_index)
         self.enable_feature_tracing()       
 
